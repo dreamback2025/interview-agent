@@ -638,4 +638,4 @@ CI：`.github/workflows/build.yml`，push / PR 时以 `LLM_STUB=true RAG_ENABLED
 
 ## 9. License
 
-[MIT](LICENSE) © 2026 interview-agent contributors
+[MIT](LICENSE) © 2026 dreamback2025
