@@ -1,0 +1,17 @@
+# 容器/生产环境：业务数据也从 H2 切到 PostgreSQL（单库更简单，向量表也在这个库里）
+# 启动：SPRING_PROFILES_ACTIVE=postgres ./run.sh
+spring:
+  datasource:
+    url: ${BIZ_DB_URL:jdbc:postgresql://localhost:5432/interview_biz}
+    driver-class-name: org.postgresql.Driver
+    username: ${BIZ_DB_USER:postgres}
+    password: ${BIZ_DB_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  h2:
+    console:
+      enabled: false

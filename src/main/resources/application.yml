@@ -1,0 +1,76 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: interview-agent
+
+  # 默认数据源：H2（MySQL 兼容模式，文件落盘），零依赖跑通闭环
+  datasource:
+    url: jdbc:h2:file:./data/interviewdb;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  # DeepSeek（OpenAI 协议兼容）
+  ai:
+    openai:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      # 从环境变量读取：DEEPSEEK_API_KEY=sk-xxx ./run.sh
+      # 未配置或仍是占位符时自动降级为离线桩模式（见 LlmConfig），不会启动失败
+      api-key: ${DEEPSEEK_API_KEY:sk-placeholder-not-set}
+      chat:
+        options:
+          model: ${DEEPSEEK_MODEL:deepseek-chat}
+          temperature: 0.3
+    # 注意缩进：ollama 是 spring.ai 的子节点，不能缩进成 openai 的子节点，
+    # 否则 spring.ai.ollama.* 全部失效，embedding 会退回 Ollama 默认模型（mxbai-embed-large）
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      embedding:
+        options:
+          model: ${EMBEDDING_MODEL:bge-m3}
+    # 多个模型提供方并存时必须指定，否则 ChatClient/EmbeddingModel 会有多个候选
+    model:
+      chat: openai
+      embedding: ollama
+
+app:
+  llm:
+    # 显式强制离线桩模式（未配置 Key 时也会自动降级）
+    stub: ${LLM_STUB:false}
+  debug:
+    # /api/debug/* 调试端点（会暴露连接串与注入给模型的 prompt 原文）
+    # 对外部署时设为 false 或只在内网开启
+    enabled: ${DEBUG_ENDPOINTS:true}
+  memory:
+    # 会话记忆：把其他历次面试的复盘结论注入当前分析（数据来自 interview_analysis 表，不依赖 Redis）
+    enabled: ${MEMORY_ENABLED:true}
+  rag:
+    # 关闭后不创建向量库相关 bean，其他功能照常可用
+    enabled: ${RAG_ENABLED:true}
+    dimensions: ${RAG_DIMENSIONS:1024}   # bge-m3 = 1024
+    # ollama = 真实语义 embedding（bge-m3）；stub = 哈希兜底，不依赖 Ollama，仅用于验证链路
+    embedding: ${RAG_EMBEDDING:ollama}
+    vectordb:
+      url: ${VECTOR_DB_URL:jdbc:postgresql://localhost:5432/interview_vector}
+      username: ${VECTOR_DB_USER:postgres}
+      password: ${VECTOR_DB_PASSWORD:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    org.hibernate.SQL: warn

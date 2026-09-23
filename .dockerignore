@@ -1,0 +1,11 @@
+target/
+data/
+data-*/
+.tools/
+*.log
+.git/
+.idea/
+*.iml
+.DS_Store
+README.md
+TODO.md

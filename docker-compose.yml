@@ -1,0 +1,93 @@
+# 一键起全栈：业务库 + 向量库（同一个 PostgreSQL）+ 本地 embedding + 应用
+#
+#   export DEEPSEEK_API_KEY=sk-xxx
+#   docker compose up -d --build
+#   docker compose exec ollama ollama pull bge-m3     # 首次要拉模型（1.2GB）
+#   浏览器打开 http://localhost:8080
+#
+# 端口占用：8080(app) / 5432(postgres) / 11434(ollama)
+
+services:
+  postgres:
+    # pgvector 官方镜像已内置扩展；用 pg17 也可以（本机 brew 装的 pgvector 只编译了 17/18，与容器无关）
+    image: pgvector/pgvector:pg16
+    container_name: interview-postgres
+    environment:
+      POSTGRES_USER: interview
+      POSTGRES_PASSWORD: interview
+      POSTGRES_DB: interview_vector
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./db/init-vector.sql:/docker-entrypoint-initdb.d/10-init-vector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U interview -d interview_vector"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: interview-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build: .
+    container_name: interview-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      SPRING_PROFILES_ACTIVE: postgres
+      # 业务数据与向量数据放在同一个库里
+      BIZ_DB_URL: jdbc:postgresql://postgres:5432/interview_vector
+      BIZ_DB_USER: interview
+      BIZ_DB_PASSWORD: interview
+      VECTOR_DB_URL: jdbc:postgresql://postgres:5432/interview_vector
+      VECTOR_DB_USER: interview
+      VECTOR_DB_PASSWORD: interview
+      # 容器内互访用服务名，不要用 localhost
+      OLLAMA_BASE_URL: http://ollama:11434
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?请先 export DEEPSEEK_API_KEY=sk-xxx}
+      TZ: Asia/Shanghai
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  # ---- 以下两个为早期方案，默认不启动 ----
+  # 想用 MySQL 存业务数据 + Redis 做缓存时：docker compose --profile legacy up -d
+  mysql:
+    image: mysql:8
+    container_name: interview-mysql
+    profiles: ["legacy"]
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: interview_agent
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  redis:
+    image: redis:7
+    container_name: interview-redis
+    profiles: ["legacy"]
+    ports:
+      - "6379:6379"
+
+volumes:
+  pg-data:
+  ollama-data:
+  mysql-data:

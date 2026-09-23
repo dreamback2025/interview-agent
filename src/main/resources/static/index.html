@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>面试复盘 Agent</title>
+<style>
+  :root {
+    --bg: #f5f7fb;
+    --card: #ffffff;
+    --text: #1f2328;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --accent: #4f46e5;
+    --accent-soft: #eef2ff;
+    --danger: #dc2626;
+    --ok: #059669;
+    --warn: #b45309;
+    --warn-soft: #fffbeb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-size: 14px; line-height: 1.6;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; font-weight: 650; }
+  .badge {
+    font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent); border: 1px solid #dbe0ff;
+  }
+  .badge.stub { background: var(--warn-soft); color: var(--warn); border-color: #fde68a; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(16,24,40,.04);
+  }
+  .card h2 { font-size: 15px; margin: 0 0 14px; font-weight: 650; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input, textarea, select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+    font: inherit; color: var(--text); background: #fff; outline: none;
+  }
+  input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,70,229,.12); }
+  textarea { resize: vertical; min-height: 68px; }
+  .full { grid-column: 1 / -1; }
+  button {
+    font: inherit; cursor: pointer; border-radius: 8px; padding: 8px 16px;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff; transition: .15s;
+  }
+  button:hover { filter: brightness(1.06); }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  button.ghost { background: #fff; color: var(--text); border-color: var(--border); }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  button.tiny { padding: 3px 10px; font-size: 12px; }
+  button.danger { background: #fff; color: var(--danger); border-color: #fecaca; }
+  .row-actions { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
+  .q-item { border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 12px; background: #fcfcfd; }
+  .q-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .q-title { font-size: 13px; font-weight: 600; color: var(--muted); }
+  .two-col { display: grid; gap: 16px; grid-template-columns: 1fr; }
+  @media (min-width: 1000px) { .two-col { grid-template-columns: 360px 1fr; align-items: start; } }
+  .record {
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+    cursor: pointer; background: #fff; transition: .15s;
+  }
+  .record:hover { border-color: var(--accent); }
+  .record.active { border-color: var(--accent); background: var(--accent-soft); }
+  .record .t { font-weight: 600; }
+  .record .s { font-size: 12px; color: var(--muted); }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .tag {
+    display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 6px;
+    background: #f3f4f6; color: #374151; margin: 0 6px 6px 0;
+  }
+  .tag.gap { background: #fef2f2; color: var(--danger); }
+  .tag[data-aid] { cursor: pointer; border: 1px solid var(--border); }
+  .tag[data-aid]:hover { border-color: var(--accent); color: var(--accent); }
+  .tag.active { background: var(--accent-soft); color: var(--accent); border-color: #c7cdff; }
+  .qa { border-left: 3px solid var(--border); padding: 8px 0 8px 12px; margin-bottom: 12px; }
+  .qa.weak { border-left-color: var(--danger); }
+  .qa.good { border-left-color: var(--ok); }
+  .qa .q { font-weight: 600; }
+  .qa .r { color: var(--muted); font-size: 13px; }
+  .focus { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: #fcfcfd; }
+  .focus .p { font-weight: 600; }
+  .focus .a { color: #374151; font-size: 13px; }
+  .summary { background: var(--accent-soft); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+  .stream { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.7; }
+  .muted { color: var(--muted); }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .err { color: var(--danger); font-size: 13px; margin-top: 8px; }
+  #toast {
+    position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%) translateY(20px);
+    background: #111827; color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: .2s; z-index: 50;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { background: var(--danger); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>面试复盘 Agent</h1>
+    <span id="mode" class="badge">检测模型状态…</span>
+    <span id="dbInfo" class="ts" style="font-size:12px;color:var(--muted)"></span>
+    <button class="ghost" id="exportBtn" style="margin-left:auto">导出 JSON</button>
+  </header>
+
+  <div id="stubTip" style="display:none" class="card">
+    <b>当前是 stub 模式</b>：未检测到 <code>DEEPSEEK_API_KEY</code>，分析结果是规则化假数据，仅用于验证链路。
+    配置后重启服务即可获得真实复盘。
+  </div>
+
+  <section class="card">
+    <h2>录入一次面试</h2>
+    <div class="grid">
+      <div>
+        <label>公司 *</label>
+        <input id="company" placeholder="例如：某互联网公司" autocomplete="off">
+      </div>
+      <div>
+        <label>岗位 *</label>
+        <input id="position" placeholder="例如：Java 后端工程师" autocomplete="off">
+      </div>
+      <div>
+        <label>面试日期</label>
+        <input id="interviewDate" type="date">
+      </div>
+      <div>
+        <label>结果</label>
+        <select id="result">
+          <option value="">未填写</option>
+          <option>挂了</option>
+          <option>通过</option>
+          <option>待结果</option>
+        </select>
+      </div>
+      <div class="full">
+        <label>目标 JD（后续用于对照出题）</label>
+        <textarea id="jd" placeholder="粘贴招聘要求，例如：熟悉 Java 并发、JVM 调优、MySQL 索引、Redis 缓存设计"></textarea>
+      </div>
+      <div class="full">
+        <label>备注</label>
+        <textarea id="notes" placeholder="例如：二面，整体偏原理追问"></textarea>
+      </div>
+    </div>
+
+    <div style="margin-top:18px">
+      <h2 style="margin-bottom:10px">题目记录</h2>
+      <div id="questions"></div>
+      <div class="row-actions">
+        <button type="button" class="ghost" id="addQ">+ 添加一道题</button>
+        <button type="button" id="submit">保存这次面试</button>
+      </div>
+      <div class="err" id="formErr"></div>
+    </div>
+  </section>
+
+  <div class="two-col">
+    <section class="card">
+      <h2>历史记录</h2>
+      <div id="records"><div class="empty">暂无记录</div></div>
+    </section>
+
+    <section class="card">
+      <h2>详情与分析</h2>
+      <div id="detail"><div class="empty">先在左侧选择一条面试记录</div></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>知识库（RAG）</h2>
+    <div class="hint" style="margin:0 0 10px">
+      把八股笔记 / 博客 / 文档粘进来，会自动切分并做向量化，之后分析面试时会优先参考这里的内容。
+      需要 PostgreSQL(pgvector) 与 Ollama 已启动，否则这里会提示 503（不影响上面的功能）。
+    </div>
+    <div class="grid">
+      <div>
+        <label>标题</label>
+        <input id="kbTitle" placeholder="例如：Java 后端八股速记">
+      </div>
+      <div>
+        <label>标签（逗号分隔）</label>
+        <input id="kbTags" placeholder="例如：JVM,MySQL,Redis">
+      </div>
+      <div class="full">
+        <label>笔记内容（支持 Markdown）</label>
+        <textarea id="kbContent" style="min-height:150px" placeholder="粘贴笔记正文…"></textarea>
+      </div>
+    </div>
+    <div class="row-actions">
+      <button type="button" id="kbUpload">入库</button>
+      <button type="button" class="ghost" id="kbSample">填入示例片段</button>
+      <span class="hint" id="kbDocCount" style="margin:0"></span>
+    </div>
+    <div class="err" id="kbErr"></div>
+
+    <div style="margin-top:16px; display:flex; gap:8px;">
+      <input id="kbQuery" placeholder="检索，例如：G1 回收流程" style="flex:1">
+      <button type="button" class="ghost" id="kbSearch">检索</button>
+    </div>
+    <div id="kbResults"></div>
+  </section>
+  <section class="card">
+    <h2>模拟面试</h2>
+    <div class="hint" style="margin:0 0 10px">
+      贴入目标 JD → 出题 → 逐题作答。答得浮于表面时面试官会<b>追问</b>，答到位才进入下一题；全部答完可看总评。
+    </div>
+    <div class="grid">
+      <div class="full">
+        <label>目标 JD</label>
+        <textarea id="mkJd" placeholder="粘贴目标岗位的 JD…"></textarea>
+      </div>
+      <div>
+        <label>重点方向（可选）</label>
+        <input id="mkFocus" placeholder="例如：并发">
+      </div>
+      <div>
+        <label>题数（1-5）</label>
+        <input id="mkCount" type="number" value="3" min="1" max="5">
+      </div>
+    </div>
+    <div class="row-actions">
+      <button type="button" id="mkStart">开始模拟面试</button>
+      <span class="hint" id="mkStatus" style="margin:0"></span>
+    </div>
+    <div class="err" id="mkErr"></div>
+    <div id="mkPanel"></div>
+  </section>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const toastEl = $('toast');
+
+function toast(msg, isErr) {
+  toastEl.textContent = msg;
+  toastEl.className = 'show' + (isErr ? ' err' : '');
+  setTimeout(() => { toastEl.className = ''; }, 2600);
+}
+
+// 所有用户输入渲染前必须转义，防止 XSS
+function esc(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+  if (!res.ok) {
+    const msg = (data && data.message) ? data.message : (text || ('HTTP ' + res.status));
+    throw new Error(msg);
+  }
+  return data;
+}
+
+/* ---------- 题目行 ---------- */
+let qIndex = 0;
+
+function addQuestionRow(data) {
+  const idx = qIndex++;
+  const d = data || {};
+  const el = document.createElement('div');
+  el.className = 'q-item';
+  el.innerHTML =
+    '<div class="q-head">' +
+      '<span class="q-title">第 ' + (idx + 1) + ' 题</span>' +
+      '<button type="button" class="tiny danger" data-act="del">删除</button>' +
+    '</div>' +
+    '<div class="grid">' +
+      '<div class="full"><label>问题 *</label><textarea placeholder="面试官问了什么"></textarea></div>' +
+      '<div class="full"><label>我的回答</label><textarea placeholder="我当时是怎么答的"></textarea></div>' +
+      '<div class="full"><label>面试官反馈</label><textarea placeholder="面试官的反问或评价"></textarea></div>' +
+      '<div><label>打分（0-10）</label><input type="number" min="0" max="10" placeholder="例如 6"></div>' +
+      '<div><label>标签（逗号分隔）</label><input placeholder="例如：JVM,GC"></div>' +
+    '</div>';
+
+  const fields = el.querySelectorAll('textarea, input');
+  if (d.question) fields[0].value = d.question;
+  if (d.myAnswer) fields[1].value = d.myAnswer;
+  if (d.feedback) fields[2].value = d.feedback;
+  if (d.score !== null && d.score !== undefined) fields[3].value = d.score;
+  if (d.tags) fields[4].value = d.tags;
+
+  el.querySelector('[data-act="del"]').onclick = () => { el.remove(); renumber(); };
+  $('questions').appendChild(el);
+}
+
+function renumber() {
+  document.querySelectorAll('#questions .q-title').forEach((t, i) => { t.textContent = '第 ' + (i + 1) + ' 题'; });
+}
+
+function collectQuestions() {
+  const list = [];
+  document.querySelectorAll('#questions .q-item').forEach(el => {
+    const f = el.querySelectorAll('textarea, input');
+    const question = f[0].value.trim();
+    if (!question) return;
+    const scoreRaw = f[3].value.trim();
+    const score = scoreRaw === '' ? null : Number(scoreRaw);
+    list.push({
+      question: question,
+      myAnswer: f[1].value.trim() || null,
+      feedback: f[2].value.trim() || null,
+      score: (score === null || Number.isNaN(score)) ? null : score,
+      tags: f[4].value.trim() || null
+    });
+  });
+  return list;
+}
+
+/* ---------- 录入 ---------- */
+$('addQ').onclick = () => addQuestionRow();
+
+$('submit').onclick = async () => {
+  const err = $('formErr');
+  err.textContent = '';
+  const company = $('company').value.trim();
+  const position = $('position').value.trim();
+  if (!company || !position) { err.textContent = '公司和岗位必填'; return; }
+
+  const body = {
+    company: company,
+    position: position,
+    interviewDate: $('interviewDate').value || null,
+    jd: $('jd').value.trim() || null,
+    result: $('result').value || null,
+    notes: $('notes').value.trim() || null,
+    questions: collectQuestions()
+  };
+
+  const btn = $('submit');
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  try {
+    const saved = await api('/api/interviews', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    toast('已保存，共 ' + (saved.questions ? saved.questions.length : 0) + ' 道题');
+    ['company','position','interviewDate','jd','notes'].forEach(k => { $(k).value = ''; });
+    $('result').value = '';
+    $('questions').innerHTML = '';
+    qIndex = 0;
+    addQuestionRow();
+    await loadRecords();
+    openRecord(saved.id);
+  } catch (e) {
+    err.textContent = '保存失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存这次面试';
+  }
+};
+
+/* ---------- 历史记录 ---------- */
+async function loadRecords() {
+  try {
+    const list = await api('/api/interviews');
+    const box = $('records');
+    if (!list || list.length === 0) { box.innerHTML = '<div class="empty">暂无记录</div>'; return; }
+    box.innerHTML = '';
+    list.forEach(r => {
+      const el = document.createElement('div');
+      el.className = 'record';
+      el.dataset.id = r.id;
+      el.innerHTML = '<div class="t">' + esc(r.company) + ' · ' + esc(r.position) + '</div>' +
+        '<div class="s">' + esc(r.interviewDate || '未填日期') + ' · ' + esc(r.result || '未填结果') +
+        ' · ' + (r.questionCount || 0) + ' 题</div>';
+      el.onclick = () => openRecord(r.id);
+      box.appendChild(el);
+    });
+  } catch (e) {
+    $('records').innerHTML = '<div class="err">加载失败：' + esc(e.message) + '</div>';
+  }
+}
+
+/* ---------- 详情 + 分析 ---------- */
+let currentId = null;
+
+async function openRecord(id) {
+  currentId = id;
+  document.querySelectorAll('.record').forEach(el => {
+    el.classList.toggle('active', el.dataset.id === String(id));
+  });
+  const box = $('detail');
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const r = await api('/api/interviews/' + id);
+    let html = '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px">' +
+      '<div><b>' + esc(r.company) + ' · ' + esc(r.position) + '</b>' +
+      '<div class="muted" style="font-size:12px">' + esc(r.interviewDate || '未填日期') + ' · ' +
+      esc(r.result || '未填结果') + '</div></div>' +
+      '<button class="ghost" id="analyzeBtn">分析弱项</button>' +
+      '<button class="ghost" id="agentBtn" title="让模型自己决定要不要检索知识库、查历史弱项、提炼 JD 要求">Agent 分析</button>' +
+      '<button class="ghost" id="streamBtn" title="SSE 流式输出，逐字生成复盘报告">流式复盘</button>' +
+      '</div>';
+
+    if (r.jd) html += '<div style="margin-top:12px"><label>目标 JD</label><div class="qa"><div class="r">' + esc(r.jd) + '</div></div></div>';
+
+    (r.questions || []).forEach((q, i) => {
+      html += '<div class="qa' + (q.weakPoints ? ' weak' : '') + '">' +
+        '<div class="q">' + (i + 1) + '. ' + esc(q.question) + '</div>' +
+        (q.myAnswer ? '<div class="r">我的回答：' + esc(q.myAnswer) + '</div>' : '') +
+        (q.feedback ? '<div class="r">面试官反馈：' + esc(q.feedback) + '</div>' : '') +
+        (q.score !== null && q.score !== undefined ? '<div class="r">打分：' + esc(q.score) + '</div>' : '') +
+        (q.tags ? '<div class="r">标签：' + esc(q.tags) + '</div>' : '') +
+        (q.weakPoints ? '<div class="r" style="color:var(--danger)">弱项：' + esc(q.weakPoints) + '</div>' : '') +
+        '</div>';
+    });
+
+    html += '<div id="history"></div>';
+    html += '<div id="report"></div>';
+    box.innerHTML = html;
+    $('analyzeBtn').onclick = () => analyze(id);
+    const ab = $('agentBtn');
+    if (ab) ab.onclick = () => agentAnalyze(id);
+    const sb = $('streamBtn');
+    if (sb) sb.onclick = () => streamAnalysis(id);
+    await loadHistory(id);
+  } catch (e) {
+    box.innerHTML = '<div class="err">加载失败：' + esc(e.message) + '</div>';
+  }
+}
+
+async function analyze(id) {
+  const btn = $('analyzeBtn');
+  const target = $('report');
+  if (btn) { btn.disabled = true; btn.textContent = '分析中…'; }
+  target.innerHTML = '<div class="empty">模型分析中，通常需要十几秒…</div>';
+  try {
+    const rep = await api('/api/interviews/analyze/' + id, { method: 'POST' });
+    await loadRecords();
+    await openRecord(id);            // 重新拉取详情，展示刚回写的 weak_points
+    renderReport(rep, $('report'));   // 报告渲染到新详情面板里
+    await loadHistory(id);            // 报告已落库，刷新历史列表
+    toast('分析完成，报告已保存');
+  } catch (e) {
+    target.innerHTML = '<div class="err">分析失败：' + esc(e.message) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '分析弱项'; }
+  }
+}
+
+async function agentAnalyze(id) {
+  const btn = $('agentBtn');
+  const target = $('report');
+  if (btn) { btn.disabled = true; btn.textContent = 'Agent 分析中…'; }
+  if (target) target.innerHTML = '<div class="empty">Agent 分析中（模型会自己决定是否检索知识库 / 查历史弱项 / 提炼 JD 要求），比普通分析慢…</div>';
+  try {
+    const rep = await api('/api/interviews/agent-analyze/' + id, { method: 'POST' });
+    await loadRecords();
+    await openRecord(id);
+    renderReport(rep, $('report'));
+    await loadHistory(id);
+    toast('Agent 分析完成，报告已保存');
+  } catch (e) {
+    if (target) target.innerHTML = '<div class="err">Agent 分析失败：' + esc(e.message) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Agent 分析'; }
+  }
+}
+
+/* ---------- SSE 流式复盘 ---------- */
+async function streamAnalysis(id) {
+  const box = $('report');
+  const btn = $('streamBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '流式生成中…'; }
+  box.innerHTML = '<label>流式复盘（逐字生成，不落库；需要存档请用「分析弱项」）</label>'
+    + '<div class="focus stream" id="streamOut">正在连接模型…</div>';
+  const out = $('streamOut');
+  let text = '';
+  try {
+    const res = await fetch('/api/interviews/' + id + '/analysis-stream');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.body || !res.body.getReader) throw new Error('当前环境不支持流式读取');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+    text = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();                      // 最后一段可能被截断，留到下一轮
+      lines.forEach(line => {
+        if (line.startsWith('data:')) text += line.slice(5);
+      });
+      out.textContent = text;
+    }
+    toast('流式复盘完成');
+  } catch (e) {
+    box.innerHTML = '<div class="err">流式复盘失败：' + esc(e.message) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '流式复盘'; }
+  }
+}
+
+/* ---------- 历史分析报告 ---------- */
+function fmtTime(ts) {
+  return ts ? String(ts).slice(0, 16).replace('T', ' ') : '';
+}
+
+async function loadHistory(recordId, activeId) {
+  const box = $('history');
+  if (!box) return;
+  try {
+    const list = await api('/api/analyses?recordId=' + encodeURIComponent(recordId));
+    if (!list || !list.length) { box.innerHTML = '<div class="empty">暂无历史分析</div>'; return; }
+    let h = '<label>历史分析（' + list.length + ' 次，点击可回看）</label>';
+    list.forEach(it => {
+      h += '<span class="tag' + (it.id === activeId ? ' active' : '') + '" data-aid="' + esc(it.id) + '">'
+        + esc(fmtTime(it.createdAt)) + ' · ' + esc(it.model || '未知') + '</span>';
+    });
+    box.innerHTML = h;
+    box.querySelectorAll('.tag[data-aid]').forEach(el => {
+      el.onclick = () => showHistory(el.getAttribute('data-aid'), recordId);
+    });
+  } catch (e) {
+    box.innerHTML = '<div class="err">历史加载失败：' + esc(e.message) + '</div>';
+  }
+}
+
+async function showHistory(analysisId, recordId) {
+  try {
+    const dto = await api('/api/analyses/' + analysisId);
+    renderReport(dto.report, $('report'));
+    document.querySelectorAll('#history .tag[data-aid]').forEach(el => {
+      el.classList.toggle('active', el.getAttribute('data-aid') === String(analysisId));
+    });
+    toast('已载入 ' + fmtTime(dto.createdAt) + ' 的报告');
+  } catch (e) {
+    toast('载入失败：' + e.message, true);
+  }
+}
+
+function renderReport(rep, target) {
+  if (!target) return;
+  let html = '<hr style="border:none;border-top:1px solid var(--border);margin:16px 0">' +
+    '<h2>复盘报告</h2>';
+  if (rep.summary) html += '<div class="summary">' + esc(rep.summary) + '</div>';
+
+  if (rep.knowledgeGaps && rep.knowledgeGaps.length) {
+    html += '<label>知识盲区</label><div style="margin-bottom:14px">' +
+      rep.knowledgeGaps.map(g => '<span class="tag gap">' + esc(g) + '</span>').join('') + '</div>';
+  }
+  const block = (title, arr, cls) => {
+    if (!arr || !arr.length) return '';
+    let s = '<label>' + title + '</label>';
+    arr.forEach(item => {
+      s += '<div class="qa ' + cls + '"><div class="q">' + esc(item.question) + '</div>' +
+        (item.reason ? '<div class="r">' + esc(item.reason) + '</div>' : '') + '</div>';
+    });
+    return s + '<div style="height:6px"></div>';
+  };
+  html += block('答得好的问题', rep.goodQuestions, 'good');
+  html += block('答得差的问题', rep.weakQuestions, 'weak');
+
+  if (rep.topPriorities && rep.topPriorities.length) {
+    html += '<label>下次优先补强的 3 个点</label>';
+    rep.topPriorities.forEach(p => {
+      html += '<div class="focus"><div class="p">' + esc(p.point) + '</div>' +
+        '<div class="a">' + esc(p.practiceAdvice) + '</div></div>';
+    });
+  }
+  target.innerHTML = html;
+}
+
+/* ---------- 导出 ---------- */
+$('exportBtn').onclick = async () => {
+  try {
+    const data = await api('/api/export');
+    const text = JSON.stringify(data, null, 2);
+    const name = 'interview-export-' + new Date().toISOString().slice(0, 10) + '.json';
+    if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+    toast('已导出 ' + data.recordCount + ' 条记录 / ' + data.analysisCount + ' 份报告');
+  } catch (e) {
+    toast('导出失败：' + e.message, true);
+  }
+};
+
+/* ---------- 知识库（RAG） ---------- */
+const SAMPLE_NOTE = '## G1 垃圾收集器\n\n'
+  + 'G1 把堆划分成多个等大的 Region，回收分三步：Young GC（只回收年轻代，STW）、'
+  + '并发标记（找出回收价值高的 Old Region）、Mixed GC（同时回收年轻代和部分 Old Region）。\n\n'
+  + '关键参数：-XX:MaxGCPauseMillis 目标停顿时间，-XX:InitiatingHeapOccupancyPercent 并发标记触发阈值。\n\n'
+  + '## Redis 缓存击穿\n\n'
+  + '热点 key 过期瞬间大量并发打到 DB。解法：互斥锁重建缓存、逻辑过期、热点数据永不过期。';
+
+$('kbSample').onclick = () => {
+  if (!$('kbTitle').value) $('kbTitle').value = '示例笔记（G1 / Redis）';
+  if (!$('kbTags').value) $('kbTags').value = 'JVM,Redis';
+  $('kbContent').value = SAMPLE_NOTE;
+};
+
+$('kbUpload').onclick = async () => {
+  const err = $('kbErr');
+  err.textContent = '';
+  const title = $('kbTitle').value.trim();
+  const content = $('kbContent').value.trim();
+  if (!title || !content) { err.textContent = '标题和内容都不能为空'; return; }
+
+  const btn = $('kbUpload');
+  btn.disabled = true;
+  btn.textContent = '入库中…';
+  try {
+    const res = await api('/api/knowledge/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: title,
+        source: '网页录入',
+        tags: $('kbTags').value.trim() || null,
+        content: content
+      })
+    });
+    toast('入库成功，切出 ' + res.chunkCount + ' 个片段');
+    $('kbContent').value = '';
+    await loadKbDocs();
+  } catch (e) {
+    err.textContent = '入库失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '入库';
+  }
+};
+
+$('kbSearch').onclick = async () => {
+  const q = $('kbQuery').value.trim();
+  const box = $('kbResults');
+  if (!q) { box.innerHTML = '<div class="err">请输入检索词</div>'; return; }
+  box.innerHTML = '<div class="empty">检索中…</div>';
+  try {
+    const list = await api('/api/knowledge/search?q=' + encodeURIComponent(q) + '&topK=5');
+    if (!list.length) { box.innerHTML = '<div class="empty">没有命中片段</div>'; return; }
+    let h = '<label>命中 ' + list.length + ' 条（按相似度排序）</label>';
+    list.forEach(r => {
+      h += '<div class="focus">'
+        + '<div class="p">' + esc(r.title || '未命名') + ' '
+        + '<span class="tag">相似度 ' + (r.score * 100).toFixed(1) + '%</span></div>'
+        + '<div class="a">' + esc(r.content) + '</div>'
+        + '</div>';
+    });
+    box.innerHTML = h;
+  } catch (e) {
+    box.innerHTML = '<div class="err">检索失败：' + esc(e.message) + '</div>';
+  }
+};
+
+async function loadKbDocs() {
+  const el = $('kbDocCount');
+  if (!el) return;
+  try {
+    const docs = await api('/api/knowledge/docs');
+    el.textContent = docs.length ? '已入库文档：' + docs.length + ' 篇' : '';
+  } catch (e) {
+    el.textContent = '';
+  }
+}
+
+/* ---------- 模拟面试 ---------- */
+const mk = { sessionId: null, questions: [], index: 0 };
+
+$('mkStart').onclick = async () => {
+  const err = $('mkErr');
+  err.textContent = '';
+  const jd = $('mkJd').value.trim();
+  if (!jd) { err.textContent = '请先填写目标 JD'; return; }
+
+  const btn = $('mkStart');
+  btn.disabled = true;
+  btn.textContent = '出题中…';
+  try {
+    const res = await api('/api/mock/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jd: jd,
+        focus: $('mkFocus').value.trim() || null,
+        count: Math.min(Math.max(parseInt($('mkCount').value || '3', 10), 1), 5)
+      })
+    });
+    mk.sessionId = res.sessionId;
+    mk.questions = res.questions || [];
+    mk.index = 0;
+    $('mkStatus').textContent = '会话 #' + res.sessionId + '，共 ' + mk.questions.length + ' 题';
+    renderMockQuestion();
+  } catch (e) {
+    err.textContent = '出题失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '开始模拟面试';
+  }
+};
+
+function renderMockQuestion(currentQuestion, lastResult) {
+  const box = $('mkPanel');
+  const q = mk.questions[mk.index];
+  if (!q) { box.innerHTML = ''; return; }
+
+  const title = currentQuestion ? '面试官追问' : '第 ' + (mk.index + 1) + ' / ' + mk.questions.length + ' 题';
+  const text = currentQuestion || q.question;
+
+  let h = '<div class="focus"><div class="p">' + esc(title) + '</div>'
+    + '<div class="a">' + esc(text) + '</div>'
+    + '<div style="margin-top:8px"><span class="tag">' + esc(q.difficulty || '中等') + '</span>'
+    + '<span class="tag">' + esc(q.intent || '') + '</span></div></div>';
+
+  if (lastResult) {
+    h += '<div class="focus"><div class="p">本轮得分 ' + esc(lastResult.score) + ' / 100</div>'
+      + '<div class="a">' + esc(lastResult.feedback) + '</div></div>';
+    if (lastResult.finished) {
+      const hasNext = mk.index + 1 < mk.questions.length;
+      h += '<div class="row-actions">'
+        + (hasNext
+            ? '<button type="button" id="mkNext">下一题</button>'
+            : '<button type="button" id="mkFinish">结束并查看总评</button>')
+        + '</div>';
+      box.innerHTML = h;
+      const next = $('mkNext');
+      if (next) next.onclick = () => { mk.index++; renderMockQuestion(); };
+      const fin = $('mkFinish');
+      if (fin) fin.onclick = finishMock;
+      return;
+    }
+  }
+
+  h += '<textarea id="mkAnswer" style="min-height:110px" placeholder="在这里写下你的回答…"></textarea>'
+    + '<div class="row-actions"><button type="button" id="mkSubmit">提交回答</button></div>';
+  box.innerHTML = h;
+  $('mkSubmit').onclick = submitMockAnswer;
+}
+
+async function submitMockAnswer() {
+  const answer = $('mkAnswer').value.trim();
+  if (!answer) { toast('请先写回答', true); return; }
+  const btn = $('mkSubmit');
+  btn.disabled = true;
+  btn.textContent = '面试官评判中…';
+  try {
+    const res = await api('/api/mock/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: mk.sessionId, questionIndex: mk.index, answer: answer })
+    });
+    const followUp = res.followUp || '';
+    renderMockQuestion(followUp ? followUp : null, res);
+    toast(res.finished ? '本题完成，得分 ' + res.score : '面试官追问了，继续作答');
+  } catch (e) {
+    toast('提交失败：' + e.message, true);
+    const b = $('mkSubmit');
+    if (b) { b.disabled = false; b.textContent = '提交回答'; }
+  }
+}
+
+async function finishMock() {
+  const box = $('mkPanel');
+  box.innerHTML = '<div class="empty">正在生成总评…</div>';
+  try {
+    const r = await api('/api/mock/' + mk.sessionId + '/finish', { method: 'POST' });
+    let h = '<div class="summary"><b>总分 ' + esc(r.totalScore) + ' / 100</b><br>' + esc(r.comment) + '</div>';
+    if (r.strengths && r.strengths.length) {
+      h += '<label>答得好的地方</label>';
+      r.strengths.forEach(s => { h += '<div class="focus"><div class="a">' + esc(s) + '</div></div>'; });
+    }
+    if (r.improvements && r.improvements.length) {
+      h += '<label>需要改进</label>';
+      r.improvements.forEach(s => { h += '<div class="focus"><div class="a">' + esc(s) + '</div></div>'; });
+    }
+    box.innerHTML = h;
+    toast('模拟面试结束，总分 ' + r.totalScore);
+  } catch (e) {
+    box.innerHTML = '<div class="err">生成总评失败：' + esc(e.message) + '</div>';
+  }
+}
+
+/* ---------- 初始化 ---------- */
+(async function init() {
+  addQuestionRow();
+  try {
+    const res = await api('/api/llm/mode');
+    const mode = res && res.mode;
+    const el = $('mode');
+    if (mode === 'deepseek') {
+      el.textContent = '已接入 DeepSeek';
+    } else {
+      el.textContent = 'stub 模式（未配置 Key）';
+      el.className = 'badge stub';
+      $('stubTip').style.display = '';
+    }
+  } catch (e) {
+    $('mode').textContent = '后端未连接';
+    $('mode').className = 'badge stub';
+  }
+  await loadRecords();
+  await loadKbDocs();
+
+  // 显示当前实例用的是哪个库、有多少数据（多实例多库时防止看错库）
+  try {
+    const info = await api('/api/debug/info');
+    const db = (info.bizDb || '').replace('jdbc:', '').split('?')[0];
+    const label = db.startsWith('postgresql') ? 'PostgreSQL' : (db.startsWith('h2') ? 'H2 文件库' : db);
+    $('dbInfo').textContent = '库：' + label + ' · 记录 ' + info.records
+      + ' · 报告 ' + info.analyses + ' · 笔记 ' + info.knowledgeDocs
+      + ' · embedding ' + info.embedding;
+  } catch (e) {
+    $('dbInfo').textContent = '';
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+# 构建产物
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# 本地数据（H2 文件库、导出数据）
+data/
+data-*/
+*.mv.db
+*.trace.db
+
+# 本地配置与密钥 —— 绝不入库
+src/main/resources/application-local.yml
+.env
+.env.local
+
+# 日志
+*.log
+logs/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# macOS
+.DS_Store
+
+# 安装包 / 大文件（防止误把 100MB+ 二进制提交进历史）
+*.dmg
+*.pkg
+
+# 临时文件
+*.tmp
+*.bak
+
+# 个人数据（真实面试记录 / 个人笔记）—— 永不入库
+docs/real-interview-*
+scripts/real-interview-*
+scripts/knowledge-answers-*
+private/

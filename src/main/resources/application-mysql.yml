@@ -1,0 +1,16 @@
+# 切真 MySQL：SPRING_PROFILES_ACTIVE=mysql ./run.sh
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/interview_agent?useUnicode=true&characterEncoding=utf8mb4&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: root
+    password: ${MYSQL_PASSWORD:root}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+  h2:
+    console:
+      enabled: false
