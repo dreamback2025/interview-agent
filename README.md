@@ -103,6 +103,9 @@ bash scripts/verify-all.sh     # 全功能自检：28 项，逐项 PASS/FAIL
 | `setup-rag.sh` | RAG 环境安装（PostgreSQL 17 + pgvector + Ollama + bge-m3） |
 | `run-postgres-local.sh` | 用与 `docker-compose.yml` 一致的 env 契约，本地以 PostgreSQL 启动 |
 | `sample-note.json` | 示例八股笔记（验证切分与检索） |
+| `eval/corpus.md` | **RAG 评测语料**：30 个知识点的八股笔记（`## <tag> \| <标题>` 格式，tag 用于自动判定命中） |
+| `eval/queries.json` | **RAG 评测集**：40 条自然口语提问（含期望 tag）+ 20 条负样本 |
+| `eval/run-eval.py` | **RAG 检索质量评测**：Hit@K / MRR / 阈值敏感性，输出 `docs/rag-eval-report.md` |
 
 ---
 
@@ -151,26 +154,47 @@ RAG_ENABLED=false ./run.sh                # 完全关闭 RAG（其他功能不�
 
 ### 切分策略（踩坑后修正）
 
-**先按 Markdown 标题切小节**，小节内再按段落合并到 600 字，超长才滑窗（重叠 100）。
-代码块内不切。为什么必须标题优先：示例笔记 1439 字/6 个小节，
-按段落切只能出 3 段、多个主题混在一起 —— 实测检索「缓存击穿」会串到 MySQL 段落；
-改成标题优先后切成 **6 段，6/6 检索全部命中正确段落**。
+**先按 Markdown 标题切小节**，小节内再按段落合并到 600 字，超长才滑窗（重叠 100），代码块内不切。
 
-### 实测结果
+为什么必须标题优先：最初按段落切分时，1439 字的示例笔记只切出 3 段、多个主题混在一起
+—— 检索「缓存击穿」会串到 MySQL 段落。改成标题优先后切出 6 段，一 chunk 一主题。
+**切分粒度对检索的影响，明显大于换 embedding 模型。**
 
-导入 1439 字笔记 → 切出 6 段 → 写入 pgvector(`vector(1024)` + HNSW cosine 索引)
+### 检索质量评测：40 正样本 + 20 负样本
 
-| 查询 | 哈希兜底 | **bge-m3（当前）** |
+完整报告见 [`docs/rag-eval-report.md`](docs/rag-eval-report.md)，可一键复跑：
+`python3 scripts/eval/run-eval.py`
+
+| 指标 | 结果 |
+|---|---|
+| Hit@1（正确答案排第一） | **28/40 = 70.0%** |
+| **Hit@3** | **38/40 = 95.0%** |
+| Hit@5 | 38/40 = 95.0% |
+| **MRR** | **0.821** |
+
+评测设计（这三条决定了结果可信度）：
+
+- 语料是 **30 个知识点**的八股笔记；提问是 **40 条自然口语提问**，刻意避开文档标题用词
+  （例如问「堆开到 64G、要求停顿 10ms 以内该选哪种回收器」，而不是问「G1 收集器」）
+- 另设 **20 条负样本**（语料中完全不存在的主题，如 Kafka / K8s / Elasticsearch），用于测假阳性
+- 命中判定基于文档 `tags` 自动完成，无人工标注介入
+
+**最有价值的结论来自负样本**：
+
+| 阈值 | 正样本 Top1 通过 | 负样本误判 |
 |---|---|---|
-| G1 回收流程 | 25.3% | **73.7%** |
-| 缓存击穿怎么解决 | 13.0% | **69.8%** |
-| MySQL 索引失效 | 24.8% | **74.4%** |
-| Spring 循环依赖三级缓存 | 44.7% | **78.7%** |
-| 线程池拒绝策略 | 6.3% | **68.4%** |
-| ZGC 适合什么场景 | 18.2% | **61.3%** |
+| ≥55% | 92.5% | 40.0% |
+| ≥58% | 82.5% | 15.0% |
+| ≥60% | 72.5% | **0%** |
+| ≥65% | 22.5% | 0% |
 
-两次都是 6/6 命中正确段落，但 bge-m3 的相似度整体高出一倍多，
-换成用词不同但语义相近的提问也能召回。
+负样本（毫不相关的主题）最高能拿到 **59.9%**，比正样本最低分（40.1%）还高 20 个百分点。
+**不存在可用的阈值工作点** —— 想让误判归零就要损失四分之一的正样本。
+所以这类系统的验收标准只能是排序指标（Hit@K / MRR），不能写成「相似度 > 0.7 即命中」。
+
+> 早期版本用 6 条**与文档标题高度重合**的提问做过验证，得到「6/6 命中、相似度 61%~79%」。
+> 那个测试没有负样本对照，**说明不了效果**，现已降级为回归冒烟（`scripts/verify-all.sh` 里的命中断言）。
+> 检索效果以本节和 `docs/rag-eval-report.md` 为准。
 
 > 切换 embedding 后**必须重新导入笔记**：旧 chunk 是用另一个模型编码的，
 > 留在库里会和新向量不同空间，检索结果会乱。删文档用 `DELETE /api/knowledge/docs/{docId}`。
@@ -451,7 +475,7 @@ bash scripts/run-postgres-local.sh      # 与 compose 里 app 服务完全相同
 | 项 | 状态 |
 |---|---|
 | `application-postgres.yml`：PG 上自动建 6 张业务表（含 `position` 关键字转义） | ✅ 实测 |
-| PG 上跑通录入 / 分析 / RAG 检索（73.7%） / 会话记忆 | ✅ 实测 |
+| PG 上跑通录入 / 分析 / RAG 检索 / 会话记忆 | ✅ 实测 |
 | `docker-compose.yml` YAML 语法与 env 契约 | ✅ 校验通过 |
 | **镜像构建与 `docker compose up`** | ⚠️ **未实测**（开发机没装 Docker） |
 
@@ -530,7 +554,10 @@ interview-agent/
 ├── run.sh                      # 本地启动（自动用工作区内的隔离版 Maven）
 ├── db/init-vector.sql          # 容器首启启用 vector 扩展
 ├── db/schema-mysql.sql         # 真 MySQL 建表语句
-├── scripts/                    # smoke.sh / verify-all.sh / ui-smoke.js / setup-rag.sh / run-postgres-local.sh
+├── scripts/
+│   ├── smoke.sh / verify-all.sh / ui-smoke.js / setup-rag.sh / run-postgres-local.sh
+│   └── eval/                   # RAG 检索质量评测：corpus.md / queries.json / run-eval.py
+├── docs/rag-eval-report.md     # 评测报告（由 run-eval.py 自动生成）
 └── src/main/java/com/dreamback/interviewagent/
     ├── controller/             # ChatController / InterviewController / MockController
     ├── service/                # InterviewService / AnalysisService / MockInterviewService
