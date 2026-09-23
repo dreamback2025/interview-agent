@@ -1,0 +1,31 @@
+{
+  "company": "某互联网公司",
+  "position": "Java 后端工程师",
+  "interviewDate": "2026-09-20",
+  "result": "待结果",
+  "jd": "负责交易核心链路开发，要求熟悉 Java 并发、JVM 调优、MySQL 索引与 Redis 缓存设计。",
+  "notes": "演示数据，用于 README 截图与自检；公司名与内容均为虚构。",
+  "questions": [
+    {
+      "question": "讲一下 JVM 垃圾回收机制和你们线上用的收集器",
+      "myAnswer": "大概说了分代回收，具体收集器记不清了",
+      "feedback": "对 G1 的工作流程讲得不清晰",
+      "score": 4,
+      "tags": "JVM,GC"
+    },
+    {
+      "question": "MySQL 索引失效有哪些场景",
+      "myAnswer": "说了最左前缀，举了 like 前缀通配符的例子",
+      "feedback": "回答较完整，补充了隐式类型转换",
+      "score": 8,
+      "tags": "MySQL,索引"
+    },
+    {
+      "question": "Redis 缓存穿透和雪崩怎么解决",
+      "myAnswer": "布隆过滤器，过期时间加随机值",
+      "feedback": "只答了一半，没讲击穿",
+      "score": 6,
+      "tags": "Redis,缓存"
+    }
+  ]
+}

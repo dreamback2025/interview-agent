@@ -197,6 +197,7 @@
       <span class="hint" id="kbDocCount" style="margin:0"></span>
     </div>
     <div class="err" id="kbErr"></div>
+    <div id="kbDocList"></div>
 
     <div style="margin-top:16px; display:flex; gap:8px;">
       <input id="kbQuery" placeholder="检索，例如：G1 回收流程" style="flex:1">
@@ -667,12 +668,43 @@ $('kbSearch').onclick = async () => {
 
 async function loadKbDocs() {
   const el = $('kbDocCount');
+  const list = $('kbDocList');
   if (!el) return;
   try {
     const docs = await api('/api/knowledge/docs');
     el.textContent = docs.length ? '已入库文档：' + docs.length + ' 篇' : '';
+    if (!list) return;
+    if (!docs.length) { list.innerHTML = ''; return; }
+    list.innerHTML = docs.map(d =>
+      '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border)">'
+      + '<span style="flex:1">' + esc(d.title || ('文档 ' + d.docId)) + '</span>'
+      + '<span class="hint" style="margin:0;white-space:nowrap">' + (d.chunkCount || 0) + ' 片段</span>'
+      + '<button type="button" class="ghost kb-del" data-id="' + esc(d.docId) + '"'
+      + ' title="删除该文档及其全部片段">删除</button>'
+      + '</div>').join('');
+    list.querySelectorAll('.kb-del').forEach(b => {
+      b.onclick = () => deleteKbDoc(b.dataset.id, b);
+    });
   } catch (e) {
     el.textContent = '';
+  }
+}
+
+/** 删除文档：连带清掉它的全部 chunk（后端已保证），删除后刷新列表 */
+async function deleteKbDoc(docId, btn) {
+  if (!confirm('删除该文档及其全部片段？此操作不可恢复。')) return;
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '删除中…';
+  try {
+    await api('/api/knowledge/docs/' + encodeURIComponent(docId), { method: 'DELETE' });
+    $('kbErr').textContent = '';
+    await loadKbDocs();
+    toast('文档已删除');
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = old;
+    $('kbErr').textContent = '删除失败：' + e.message;
   }
 }
 

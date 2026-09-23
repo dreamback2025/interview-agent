@@ -17,6 +17,8 @@
     <name>interview-agent</name>
     <description>AI 面试复盘 Agent：面试记录录入 → LLM 弱项分析 → RAG 知识库检索增强 → Function Calling → 多轮模拟面试 → SSE 流式复盘</description>
 
+    <url>https://github.com/dreamback2025/interview-agent</url>
+
     <licenses>
         <license>
             <name>MIT License</name>

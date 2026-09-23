@@ -1,5 +1,7 @@
 # interview-agent · AI 面试复盘 Agent
 
+[![build](https://github.com/dreamback2025/interview-agent/actions/workflows/build.yml/badge.svg)](https://github.com/dreamback2025/interview-agent/actions/workflows/build.yml)
+
 > 一句话：**录入一次真实面试 → LLM 分析弱项 → RAG 检索知识库增强 → 输出可执行的补强计划 → 多轮模拟面试 → SSE 流式复盘。**
 
 技术栈：Java 21 · Spring Boot 3.5.16 · Spring AI 1.1.8（DeepSeek，OpenAI 协议）· Ollama bge-m3 + PostgreSQL/pgvector · JPA · H2（零依赖起步）· Docker Compose
@@ -100,12 +102,31 @@ bash scripts/verify-all.sh     # 全功能自检：28 项，逐项 PASS/FAIL
 | `smoke.sh` | 快速冒烟：录入 → 列表 → 详情 → 分析 → 出题 |
 | `verify-all.sh` | **全功能自检（28 项）**：服务/模型、录入分析落库导出、RAG 检索命中断言、工具调用、模拟面试、流式 + 会话记忆 |
 | `ui-smoke.js` | 用 jsdom 真实执行页面 JS（`SKIP_SLOW=1` 跳过慢步骤） |
+| `ui-shot.js` | 用本机 Chrome 无头截图到 `docs/screenshots/`（需 `puppeteer-core`，仅开发用） |
 | `setup-rag.sh` | RAG 环境安装（PostgreSQL 17 + pgvector + Ollama + bge-m3） |
 | `run-postgres-local.sh` | 用与 `docker-compose.yml` 一致的 env 契约，本地以 PostgreSQL 启动 |
 | `sample-note.json` | 示例八股笔记（验证切分与检索） |
 | `eval/corpus.md` | **RAG 评测语料**：30 个知识点的八股笔记（`## <tag> \| <标题>` 格式，tag 用于自动判定命中） |
 | `eval/queries.json` | **RAG 评测集**：40 条自然口语提问（含期望 tag）+ 20 条负样本 |
 | `eval/run-eval.py` | **RAG 检索质量评测**：Hit@K / MRR / 阈值敏感性，输出 `docs/rag-eval-report.md` |
+
+---
+
+## 1.4 界面预览
+
+> 截图在**离线桩模式**（未配置 API Key）下采集 —— 零依赖即可复现：
+> `./run.sh` 后访问 <http://localhost:8080>，或跑 `node scripts/ui-shot.js` 自动重截
+> （用本机 Chrome + puppeteer-core，无头模式）。
+
+**录入与分析**：填表录入面试 → 左侧历史记录 → 右侧详情。分析完成后，弱项会**回写到题目卡片**上（红框标注）。
+
+![录入与历史](docs/screenshots/01-overview.png)
+
+![详情与分析](docs/screenshots/02-detail-report.png)
+
+**知识库（RAG）**：文档列表带片段数与删除按钮，删除会连带清掉该文档的全部向量片段。
+
+![知识库](docs/screenshots/03-knowledge-base.png)
 
 ---
 
