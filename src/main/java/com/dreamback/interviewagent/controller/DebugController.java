@@ -45,12 +45,15 @@ public class DebugController {
     @GetMapping("/info")
     public Map<String, Object> info(@Value("${spring.datasource.url:}") String bizUrl,
                                     @Value("${app.rag.vectordb.url:}") String vectorUrl,
-                                    @Value("${app.rag.embedding:ollama}") String embedding) {
+                                    @Value("${app.rag.embedding:ollama}") String embedding,
+                                    @Value("${app.rag.hybrid.enabled:true}") boolean hybrid) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("profiles", String.join(",", environment.getActiveProfiles()));
         m.put("bizDb", mask(bizUrl));
         m.put("vectorDb", mask(vectorUrl));
         m.put("embedding", embedding);
+        // 检索模式：hybrid（向量+关键词+RRF）/ vector（纯向量）—— 评测报告据此标注，避免两组数据混淆
+        m.put("retrieval", hybrid ? "hybrid" : "vector");
         m.put("records", recordRepository.count());
         m.put("analyses", analysisRepository.count());
         m.put("knowledgeDocs", docRepository.count());

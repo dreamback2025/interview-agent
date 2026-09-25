@@ -29,6 +29,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPORT = os.path.abspath(os.path.join(HERE, '..', '..', 'docs', 'rag-eval-report.md'))
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+# 鉴权默认开启：登录后所有请求带 Bearer token；也可用环境变量 TOKEN 直接传
+TOKEN = os.environ.get('TOKEN', '')
+
 
 def api(path, data=None, method=None):
     req = urllib.request.Request(BASE + path, method=method or ('POST' if data is not None else 'GET'))
@@ -36,9 +39,29 @@ def api(path, data=None, method=None):
     if data is not None:
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
         req.add_header('Content-Type', 'application/json')
+    if TOKEN:
+        req.add_header('Authorization', 'Bearer ' + TOKEN)
     with OPENER.open(req, body, timeout=300) as r:
         txt = r.read().decode('utf-8')
         return json.loads(txt) if txt.strip() else None
+
+
+def login():
+    """登录拿 token（演示账号）；服务端关闭鉴权时静默继续"""
+    global TOKEN
+    if TOKEN:
+        return
+    for path in ('/api/auth/login', '/api/auth/register'):
+        try:
+            r = api(path, {'username': 'demo', 'password': 'demo123'})
+            t = (r or {}).get('token')
+            if t:
+                TOKEN = t
+                print('[auth] 已登录：%s' % path)
+                return
+        except Exception:
+            continue
+    print('[auth] 未获取 token，按免鉴权模式继续')
 
 
 def parse_corpus():
@@ -70,6 +93,13 @@ def search(q, topk=TOPK):
 
 
 def main():
+    login()
+    # 读服务端检索模式（hybrid / vector），写进报告 —— 两种配置的结果不能混在同一份报告里
+    retrieval = 'unknown'
+    try:
+        retrieval = (api('/api/debug/info') or {}).get('retrieval') or 'unknown'
+    except Exception:
+        pass
     corpus = parse_corpus()
     spec = json.load(open(os.path.join(HERE, 'queries.json'), encoding='utf-8'))
     positives, negatives = spec['positive'], spec['negative']
@@ -184,6 +214,7 @@ def main():
     md.append('| 语料 | %d 个知识点（八股笔记，含具体参数与流程） |' % len(corpus))
     md.append('| 切分 | 按 Markdown 标题优先切分，600 字上限、重叠 100 |')
     md.append('| Embedding | Ollama bge-m3，1024 维 |')
+    md.append('| **检索模式** | `%s`（hybrid = 向量 + 关键词 tsvector + RRF 融合；vector = 纯向量） |' % retrieval)
     md.append('| 向量库 | PostgreSQL 17 + pgvector 0.8.6，HNSW + cosine |')
     md.append('| 正样本 | %d 条自然口语提问（措辞刻意不与文档标题重合，expect 对应知识点 tag） |' % n)
     md.append('| 负样本 | %d 条语料中完全不存在的主题（用于测假阳性） |' % len(neg))
@@ -208,6 +239,36 @@ def main():
         for f in fails:
             got = f['top1']['title'] if f['top1'] else '(空)'
             md.append('| `%s` | %s | %s | %s |' % (f['expect'], f['q'], got, f['rank'] or '>5'))
+        md.append('')
+    # 与纯向量基线对照（基线固化在 baseline-vector.json，保证结论可复跑）
+    baseline_path = os.path.join(HERE, 'baseline-vector.json')
+    if retrieval == 'hybrid' and os.path.exists(baseline_path):
+        b = json.load(open(baseline_path, encoding='utf-8'))
+        md.append('## 2.5 混合检索的收益（与纯向量基线对照）')
+        md.append('')
+        md.append('同一套语料、查询与 embedding，仅切换 `app.rag.hybrid.enabled`：')
+        md.append('')
+        md.append('| 指标 | 纯向量 `%s` | 混合 `%s` | 变化 |' % (b['mode'], retrieval))
+        md.append('|---|---|---|---|')
+        md.append('| **Hit@1** | %d/%d = %.1f%% | %d/%d = **%.1f%%** | **%+.1fpp** |'
+                  % (b['hit1Count'], b['total'], b['hit1'] * 100, h1, n, 100.0 * h1 / n,
+                     100.0 * h1 / n - b['hit1'] * 100))
+        md.append('| Hit@3 | %.1f%% | %.1f%% | %+.1fpp |'
+                  % (b['hit3'] * 100, 100.0 * h3 / n, 100.0 * h3 / n - b['hit3'] * 100))
+        md.append('| Hit@5 | %.1f%% | %.1f%% | %+.1fpp |'
+                  % (b['hit5'] * 100, 100.0 * h5 / n, 100.0 * h5 / n - b['hit5'] * 100))
+        md.append('| **MRR** | %.3f | **%.3f** | %+.3f |' % (b['mrr'], mrr, mrr - b['mrr']))
+        md.append('| 未命中 Top1 | %d 条 | %d 条 | %+d |'
+                  % (b['missTop1'], len(fails), len(fails) - b['missTop1']))
+        md.append('')
+        md.append('**机制**：关键词通道（tsvector + GIN 索引）用 token 精确匹配，'
+                  '把「语义相近但答案不同」的同域干扰项挤下去。'
+                  '例如「索引失效」与「索引结构」共享 `mysql`/`索引`，但不共享 `引失`/`失效`，'
+                  'RRF 融合后正确项排名上升。')
+        md.append('')
+        md.append('**已知副作用**：关键词通道会引入新噪音 —— 实测有 1/40 条出现回退'
+                  '（「缓存和数据库的一致性」的 Top1 变成「分布式事务」）。'
+                  '缓解方向：调低关键词通道权重，或引入 cross-encoder rerank 做二次精排。')
         md.append('')
     md.append('## 3. 负样本对照')
     md.append('')

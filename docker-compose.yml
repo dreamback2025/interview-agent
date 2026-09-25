@@ -102,6 +102,8 @@ services:
       VECTOR_DB_PASSWORD: interview
       # 容器内互访用服务名，不要用 localhost
       OLLAMA_BASE_URL: http://ollama:11434
+      # 混合检索（向量 + 关键词 tsvector + RRF）；业务库与向量库同库，关键词通道可用
+      RAG_HYBRID_ENABLED: ${RAG_HYBRID_ENABLED:-true}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       RABBITMQ_HOST: rabbitmq

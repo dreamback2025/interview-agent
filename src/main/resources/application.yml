@@ -82,6 +82,10 @@ app:
     dimensions: ${RAG_DIMENSIONS:1024}   # bge-m3 = 1024
     # ollama = 真实语义 embedding（bge-m3）；stub = 哈希兜底，不依赖 Ollama，仅用于验证链路
     embedding: ${RAG_EMBEDDING:ollama}
+    hybrid:
+      # 混合检索：向量语义 + 关键词（tsvector + GIN）+ RRF 融合。
+      # 关键词通道不可用（业务库与向量库不同库）时自动退化为纯向量，不会让检索失败。
+      enabled: ${RAG_HYBRID_ENABLED:true}
     vectordb:
       url: ${VECTOR_DB_URL:jdbc:postgresql://localhost:5432/interview_vector}
       username: ${VECTOR_DB_USER:postgres}

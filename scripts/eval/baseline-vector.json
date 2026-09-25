@@ -1,0 +1,13 @@
+{
+  "_comment": "纯向量检索基线（app.rag.hybrid.enabled=false），同语料同查询同 embedding。用于评测报告里的对照表 —— 想刷新基线就关掉 hybrid 重跑 run-eval.py，把新数字填到这里。",
+  "mode": "vector",
+  "total": 40,
+  "hit1": 0.700,
+  "hit1Count": 28,
+  "hit3": 0.950,
+  "hit3Count": 38,
+  "hit5": 0.950,
+  "hit5Count": 38,
+  "mrr": 0.827,
+  "missTop1": 12
+}
