@@ -3,7 +3,7 @@ package com.dreamback.interviewagent.config;
 import com.dreamback.interviewagent.security.JwtAuthFilter;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
@@ -42,10 +42,24 @@ public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
 
-    /** 总开关：关掉后所有接口免鉴权（本地调试 / 单用户自用场景） */
+    @Value("${app.security.enabled:true}")
+    private boolean securityEnabled;
+
+    /**
+     * 总开关：关掉后所有接口免鉴权（本地调试 / 单用户自用场景）。
+     *
+     * <p>注意：**关闭时必须仍然显式构建一个放行链**。
+     * 如果只是「不注册自己的链」，Spring Boot 会启用它的默认安全链把请求全挡下来 ——
+     * 表现为 `SECURITY_ENABLED=false` 依然返回 401（这个坑踩过）。
+     */
     @Bean
-    @ConditionalOnProperty(name = "app.security.enabled", havingValue = "true", matchIfMissing = true)
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        if (!securityEnabled) {
+            http.csrf(csrf -> csrf.disable())
+                    .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                    .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+            return http.build();
+        }
         http
                 .csrf(csrf -> csrf.disable())
                 // 无状态：不创建 Session，JWT 自带身份
