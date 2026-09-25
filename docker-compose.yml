@@ -1,11 +1,17 @@
-# 一键起全栈：业务库 + 向量库（同一个 PostgreSQL）+ 本地 embedding + 应用
+# 一键起全栈：业务库 + 向量库（同一个 PostgreSQL）+ Redis 缓存 + RabbitMQ + 本地 embedding + 应用
 #
 #   export DEEPSEEK_API_KEY=sk-xxx
 #   docker compose up -d --build
 #   docker compose exec ollama ollama pull bge-m3     # 首次要拉模型（1.2GB）
 #   浏览器打开 http://localhost:8080
 #
-# 端口占用：8080(app) / 5432(postgres) / 11434(ollama)
+# 端口占用：
+#   8080(app) / 5432(postgres) / 6379(redis)
+#   5672(rabbitmq) / 15672(rabbitmq 管理台) / 11434(ollama)
+#
+# 说明：Redis 与 RabbitMQ 是「可降级组件」—— 它们挂掉时应用仍能启动并提供服务
+#       （缓存跳过、任务退回本地线程池执行），所以 app 对它们只依赖 service_started，
+#       不像 postgres 那样等 service_healthy。
 
 services:
   postgres:
@@ -41,6 +47,38 @@ services:
       timeout: 5s
       retries: 12
 
+  redis:
+    image: redis:7-alpine
+    container_name: interview-redis
+    # 限制内存 + LRU 淘汰：缓存不该无上限增长
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: interview-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: interview
+      RABBITMQ_DEFAULT_PASS: interview
+    ports:
+      - "5672:5672"
+      - "15672:15672"    # 管理台：http://localhost:15672
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   app:
     build: .
     container_name: interview-app
@@ -48,6 +86,10 @@ services:
       postgres:
         condition: service_healthy
       ollama:
+        condition: service_started
+      redis:
+        condition: service_started
+      rabbitmq:
         condition: service_started
     environment:
       SPRING_PROFILES_ACTIVE: postgres
@@ -60,14 +102,22 @@ services:
       VECTOR_DB_PASSWORD: interview
       # 容器内互访用服务名，不要用 localhost
       OLLAMA_BASE_URL: http://ollama:11434
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?请先 export DEEPSEEK_API_KEY=sk-xxx}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: interview
+      RABBITMQ_PASSWORD: interview
+      # 留空也能启动：应用自动进入离线桩模式（与「全链路降级」的设计一致）
+      # 要接真实模型就先 export DEEPSEEK_API_KEY=sk-xxx 再 up
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       TZ: Asia/Shanghai
     ports:
       - "8080:8080"
     restart: unless-stopped
 
-  # ---- 以下两个为早期方案，默认不启动 ----
-  # 想用 MySQL 存业务数据 + Redis 做缓存时：docker compose --profile legacy up -d
+  # ---- 早期方案，默认不启动 ----
+  # 想用 MySQL 存业务数据：docker compose --profile legacy up -d
   mysql:
     image: mysql:8
     container_name: interview-mysql
@@ -80,14 +130,9 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
 
-  redis:
-    image: redis:7
-    container_name: interview-redis
-    profiles: ["legacy"]
-    ports:
-      - "6379:6379"
-
 volumes:
   pg-data:
   ollama-data:
+  redis-data:
+  rabbit-data:
   mysql-data:
