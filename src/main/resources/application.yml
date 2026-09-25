@@ -20,6 +20,16 @@ spring:
       enabled: true
       path: /h2-console
 
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+
   # DeepSeek（OpenAI 协议兼容）
   ai:
     openai:
@@ -64,12 +74,33 @@ app:
       url: ${VECTOR_DB_URL:jdbc:postgresql://localhost:5432/interview_vector}
       username: ${VECTOR_DB_USER:postgres}
       password: ${VECTOR_DB_PASSWORD:}
+  cache:
+    # 分析结果与检索结果缓存。Redis 不可用时自动跳过缓存，主流程不受影响
+    enabled: ${CACHE_ENABLED:true}
+    ttl: ${CACHE_TTL:30m}
+  async:
+    # 分析任务异步化：mq = RabbitMQ；pool = 本地线程池（无 MQ 时自动降级）
+    enabled: ${ASYNC_ENABLED:true}
+    mode: ${ASYNC_MODE:mq}
+  ratelimit:
+    # 按用户维度限流，保护模型配额与成本
+    enabled: ${RATELIMIT_ENABLED:true}
+    qpm: ${RATELIMIT_QPM:60}
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
+  health:
+    # Redis / MQ 是「可降级组件」：它们挂掉时应用仍可用，不应让整体存活判定失败
+    redis:
+      enabled: false
+    rabbit:
+      enabled: false
+  metrics:
+    tags:
+      application: ${spring.application.name}
 
 logging:
   level:

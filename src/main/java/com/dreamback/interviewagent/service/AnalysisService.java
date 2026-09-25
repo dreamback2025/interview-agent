@@ -1,5 +1,6 @@
 package com.dreamback.interviewagent.service;
 
+import com.dreamback.interviewagent.cache.CacheService;
 import com.dreamback.interviewagent.dto.AnalysisHistoryItem;
 import com.dreamback.interviewagent.dto.AnalysisRecordDto;
 import com.dreamback.interviewagent.dto.AnalysisReport;
@@ -9,6 +10,7 @@ import com.dreamback.interviewagent.entity.InterviewRecord;
 import com.dreamback.interviewagent.llm.LlmService;
 import com.dreamback.interviewagent.repository.InterviewAnalysisRepository;
 import com.dreamback.interviewagent.repository.InterviewRecordRepository;
+import com.dreamback.interviewagent.util.Digest;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
@@ -17,6 +19,7 @@ import java.util.List;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -56,12 +59,20 @@ public class AnalysisService {
             如果参考信息里指出了「老问题反复出现」，要明确点名。全部使用中文，直接输出 Markdown，不要额外解释。
             """;
 
+    /**
+     * Prompt 版本：改动 System Prompt 或输出结构时递增，缓存 key 随之变化 ——
+     * 旧缓存自然失效，不需要手工清理。
+     */
+    private static final String PROMPT_VERSION = "v1";
+
     private final InterviewRecordRepository recordRepository;
     private final InterviewAnalysisRepository analysisRepository;
     private final LlmService llmService;
     private final KnowledgeService knowledgeService;
     private final MemoryService memoryService;
     private final ObjectMapper objectMapper;
+    /** 用 ObjectProvider：缓存关闭时不创建 bean，避免注入失败 */
+    private final ObjectProvider<CacheService> cacheProvider;
 
     @Transactional
     public AnalysisReport analyze(Long recordId) {
@@ -71,13 +82,41 @@ public class AnalysisService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该记录没有任何题目，无法分析");
         }
 
+        // 幂等：内容相同的请求直接返回上次结果，不重复调用模型（省 token 也省时间）
+        CacheService cache = cacheProvider.getIfAvailable();
+        String cacheKey = analysisCacheKey(record);
+        if (cache != null) {
+            AnalysisReport cached = cache.get(cacheKey, AnalysisReport.class);
+            if (cached != null) {
+                log.info("分析结果命中缓存，跳过模型调用：recordId={}", recordId);
+                return cached;
+            }
+        }
+
         AnalysisReport report = llmService.structured(
                 SYSTEM_PROMPT, buildUserPrompt(record),
                 AnalysisReport.class, () -> heuristic(record));
 
         persistWeakPoints(record, report);
         saveAnalysis(record, report);
+        if (cache != null) {
+            cache.put(cacheKey, report);
+        }
         return report;
+    }
+
+    /**
+     * 缓存 key = prompt版本 + 记录id + 内容指纹。
+     * 内容指纹覆盖题目/回答/反馈/打分，任一变化都会自动换新 key，无需手动失效。
+     */
+    private String analysisCacheKey(InterviewRecord r) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(nvl2(r.getPosition())).append('|').append(nvl2(r.getJd())).append('|');
+        for (InterviewQuestion q : r.getQuestions()) {
+            sb.append(nvl2(q.getQuestion())).append('|').append(nvl2(q.getMyAnswer())).append('|')
+              .append(nvl2(q.getFeedback())).append('|').append(q.getScore()).append('|');
+        }
+        return "analysis:" + PROMPT_VERSION + ":" + r.getId() + ":" + Digest.sha256Short(sb.toString());
     }
 
     /** 供 Agent 模式复用：只落库，不重复分析 */

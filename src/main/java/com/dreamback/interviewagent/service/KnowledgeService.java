@@ -1,11 +1,14 @@
 package com.dreamback.interviewagent.service;
 
+import com.dreamback.interviewagent.cache.CacheService;
 import com.dreamback.interviewagent.dto.IngestRequest;
 import com.dreamback.interviewagent.dto.IngestResponse;
 import com.dreamback.interviewagent.dto.SearchResult;
 import com.dreamback.interviewagent.entity.KnowledgeDoc;
 import com.dreamback.interviewagent.rag.TextSplitter;
 import com.dreamback.interviewagent.repository.KnowledgeDocRepository;
+import com.dreamback.interviewagent.util.Digest;
+import com.fasterxml.jackson.core.type.TypeReference;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -31,6 +34,10 @@ public class KnowledgeService {
     private final KnowledgeDocRepository docRepository;
     /** RAG 关闭或向量库不可用时拿不到 bean，用 ObjectProvider 延迟取，避免拖垮应用启动 */
     private final ObjectProvider<VectorStore> vectorStoreProvider;
+    /** 缓存同样可关闭，用 ObjectProvider 取 */
+    private final ObjectProvider<CacheService> cacheProvider;
+
+    private static final String SEARCH_CACHE_PREFIX = "kbsearch:";
 
     public IngestResponse ingest(IngestRequest req) {
         List<String> chunks = splitter.split(req.getContent());
@@ -59,6 +66,7 @@ public class KnowledgeService {
         doc.setChunkCount(chunks.size());
         docRepository.save(doc);
 
+        evictSearchCache();
         return new IngestResponse(docId, chunks.size(), "已入库，共切出 " + chunks.size() + " 个片段");
     }
 
@@ -66,6 +74,17 @@ public class KnowledgeService {
         if (query == null || query.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "q 不能为空");
         }
+
+        // 热点查询缓存：省掉一次 embedding + 向量检索（实测这两步占检索耗时的绝大部分）
+        CacheService cache = cacheProvider.getIfAvailable();
+        String cacheKey = SEARCH_CACHE_PREFIX + topK + ":" + Digest.sha256Short(query);
+        if (cache != null) {
+            List<SearchResult> cached = cache.getTyped(cacheKey, new TypeReference<List<SearchResult>>() { });
+            if (cached != null) {
+                return cached;
+            }
+        }
+
         var hits = store().similaritySearch(
                 SearchRequest.builder().query(query).topK(topK).build());
 
@@ -80,7 +99,18 @@ public class KnowledgeService {
             r.setTags(str(d.getMetadata().get("tags")));
             out.add(r);
         }
+        if (cache != null) {
+            cache.put(cacheKey, out);
+        }
         return out;
+    }
+
+    /** 库内容变化后，检索结果全部失效 */
+    private void evictSearchCache() {
+        CacheService cache = cacheProvider.getIfAvailable();
+        if (cache != null) {
+            cache.evictByPrefix(SEARCH_CACHE_PREFIX);
+        }
     }
 
     public List<KnowledgeDoc> docs() {
@@ -99,6 +129,7 @@ public class KnowledgeService {
                 new Filter.Value(docId));
         store().delete(expr);
         docRepository.findByDocId(docId).ifPresent(docRepository::delete);
+        evictSearchCache();
     }
 
     private VectorStore store() {
