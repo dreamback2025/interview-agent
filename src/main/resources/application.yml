@@ -82,6 +82,7 @@ app:
     # 分析任务异步化：mq = RabbitMQ；pool = 本地线程池（无 MQ 时自动降级）
     enabled: ${ASYNC_ENABLED:true}
     mode: ${ASYNC_MODE:mq}
+    queue: ${ASYNC_QUEUE:analysis.task.queue}
   ratelimit:
     # 按用户维度限流，保护模型配额与成本
     enabled: ${RATELIMIT_ENABLED:true}
