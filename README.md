@@ -122,9 +122,13 @@ bash scripts/verify-all.sh     # 全功能自检：28 项，逐项 PASS/FAIL
 
 > 截图在**离线桩模式**（未配置 API Key）下采集 —— 零依赖即可复现：
 > `./run.sh` 后访问 <http://localhost:8080>，或跑 `node scripts/ui-shot.js` 自动重截
-> （用本机 Chrome + puppeteer-core，无头模式）。
+> （用本机 Chrome + puppeteer-core，无头模式，自动完成登录后采集）。
 
-**录入与分析**：填表录入面试 → 左侧历史记录 → 右侧详情。分析完成后，弱项会**回写到题目卡片**上（红框标注）。
+**登录**：默认开启 JWT 鉴权，未登录时业务区被遮罩挡住；演示账号 `demo / demo123` 随启动自动创建，也可现场注册。
+
+![登录](docs/screenshots/00-login.png)
+
+**录入与分析**：填表录入面试 → 左侧历史记录 → 右侧详情。分析完成后，弱项会**回写到题目卡片**上（红框标注）。顶栏显示当前用户与所属数据库。
 
 ![录入与历史](docs/screenshots/01-overview.png)
 
