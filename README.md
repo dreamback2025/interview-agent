@@ -712,8 +712,8 @@ curl http://localhost:8080/api/export -o interview-export.json
 
 导出的 JSON 含 `interviews`（公司/岗位/JD/题目/回答/反馈/打分/标签/弱项）与 `analyses`（每份完整报告）。
 
-> 隐私提醒：面试记录含公司、JD 和你的真实回答，属于敏感内容。当前**无鉴权、未加密**，
-> `data/` 已在 `.gitignore` 中（不会进 git），请不要把服务暴露到公网。
+> 隐私提醒：面试记录含公司、JD 和你的真实回答，属于敏感内容。**默认开启 JWT 鉴权**（演示账号 `demo/demo123`），
+> `data/` 已在 `.gitignore` 中（不会进 git）。对外部署请改 `JWT_SECRET`、关 `DEMO_USER_ENABLED`、设 `DEBUG_ENDPOINTS=false`。
 
 ---
 
@@ -733,9 +733,13 @@ interview-agent/
 │   └── eval/                   # RAG 检索质量评测：corpus.md / queries.json / run-eval.py
 ├── docs/rag-eval-report.md     # 评测报告（由 run-eval.py 自动生成）
 └── src/main/java/com/dreamback/interviewagent/
-    ├── controller/             # ChatController / InterviewController / MockController
-    ├── service/                # InterviewService / AnalysisService / MockInterviewService
+    ├── controller/             # ChatController / InterviewController / MockController / AuthController ...
+    ├── service/                # 业务接口：InterviewService / AnalysisService / KnowledgeService /
+    │   │                       #           MockInterviewService / AuthService
+    │   └── impl/               # 对应实现（@Service 与 @Transactional 放这里，不放接口上）
     ├── llm/                    # LlmService 接口 + DeepSeek 实现 + Stub 兜底
+    ├── security/               # JwtService / JwtAuthFilter / UserContext
+    ├── cache|async|agent|rag   # 缓存 / 异步任务 / 工具 / 切分
     ├── entity|repository|dto|config|web
 ```
 
