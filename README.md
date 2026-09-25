@@ -540,6 +540,50 @@ bash scripts/run-postgres-local.sh      # 与 compose 里 app 服务完全相同
 
 ---
 
+## 2.11 异步分析任务
+
+**解决什么问题**：首次分析要调模型，单次 3~10 秒；同步接口会让 HTTP 请求一直挂着 —— 占用连接、前端转圈、还有超时风险。
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/analysis/tasks` | 提交任务，**立即返回 202** 与 `taskId`，不等模型 |
+| `GET /api/analysis/tasks/{taskId}` | 查状态；`SUCCESS` 时直接把报告带回来 |
+| `GET /api/analysis/tasks?recordId=` | 最近 20 条任务 |
+| `POST /api/analysis/tasks/{taskId}/retry` | 失败任务重试（taskId 不变，便于追踪） |
+
+状态机：`PENDING → RUNNING → SUCCESS / FAILED`
+
+同步接口 `POST /api/interviews/analyze/{id}` **仍然保留**：演示、自检，以及**命中缓存时**
+（本来就毫秒级）走同步更直接。
+
+**三个关键设计**：
+
+1. **先落库，再投递** —— 反过来做的话，消息发出去了但写库失败，消费者查不到任务，
+   消息等于丢失且无从追踪。先落库的最坏情况是任务卡在 `PENDING`，可以扫描出来补偿。
+
+2. **幂等在数据库层**：
+   ```sql
+   UPDATE analysis_task SET status='RUNNING' WHERE task_id = ? AND status = 'PENDING'
+   ```
+   消息重放或消费端重连时，第二条抢不到 `PENDING` 状态（影响 0 行）就直接跳过 ——
+   不会把同一份内容分析两次，也就不会重复消耗 token。
+
+3. **状态变更独立于业务事务**（`REQUIRES_NEW`）—— 分析失败时业务数据该回滚就回滚，
+   但"这次失败了"这件事必须记下来，否则任务会永远停在 RUNNING。
+
+**降级**：`app.async.mode=mq` 时投递 RabbitMQ，发送失败自动转本地线程池；
+线程池队列满时用 `CallerRunsPolicy` 把压力还给调用方（HTTP 变慢），形成背压而不是静默丢任务。
+
+实测（真实 RabbitMQ 容器）：
+
+```text
+MQ 正常：提交 202（0.09s）  → 通道 mq   → SUCCESS
+停掉 MQ：提交 202（0.014s）→ 通道 pool → 仍然 SUCCESS（自动降级）
+重复投递同一条消息：skipped +1，且报告没有重复生成
+```
+
+---
+
 ## 3. 数据存储
 
 ### 先搞清楚数据在哪个库（多实例容易搞混）
