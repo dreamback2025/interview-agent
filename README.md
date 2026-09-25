@@ -4,9 +4,11 @@
 
 > 一句话：**录入一次真实面试 → LLM 分析弱项 → RAG 检索知识库增强 → 输出可执行的补强计划 → 多轮模拟面试 → SSE 流式复盘。**
 
-技术栈：Java 21 · Spring Boot 3.5.16 · Spring AI 1.1.8（DeepSeek，OpenAI 协议）· Ollama bge-m3 + PostgreSQL/pgvector · JPA · H2（零依赖起步）· Docker Compose
+技术栈：Java 21 · Spring Boot 3.5.16 · Spring AI 1.1.8（DeepSeek，OpenAI 协议）· Ollama bge-m3 + PostgreSQL/pgvector · Redis · RabbitMQ · JPA · Docker Compose · SSE · Micrometer/Prometheus
 
-**核心能力**：面试记录结构化落库 · 弱项分析 + 补强建议 · 知识库语义检索（标题切分 + 1024 维向量 + HNSW 索引）· Function Calling（`@Tool` 由模型自主调用）· 多轮模拟面试与打分 · SSE 流式复盘 · 跨记录会话记忆 · 28 项一键自检
+**核心能力**：面试记录结构化落库 · 弱项分析 + 补强建议 · 知识库语义检索（标题切分 + 1024 维向量 + HNSW 索引）· Function Calling（`@Tool` 由模型自主调用）· 多轮模拟面试与打分 · SSE 流式复盘 · 跨记录会话记忆 · **结果缓存与幂等** · 28 项一键自检
+
+**工程主线**：用后端手段解决 LLM 应用的规模化问题 —— 慢（缓存 + 幂等）、贵（限流）、不可靠（全链路降级）、不可观测（指标 + traceId）。LLM 与 RAG 只是客��链路的两端，工程难点在中间这段。
 
 > 每一块功能都附**可复现的实测数据**（见下文各节）。
 
@@ -33,6 +35,10 @@
 | 查看当前模型模式（`deepseek` / `stub`） | <http://localhost:8080/api/llm/mode> |
 | 模型联通性冒烟 | <http://localhost:8080/chat?q=你好> |
 | H2 数据库控制台 | <http://localhost:8080/h2-console> |
+| **运行指标**（缓存命中、任务、限流） | <http://localhost:8080/actuator/prometheus> |
+| RabbitMQ 管理台（仅容器编排时） | <http://localhost:15672> |
+
+容器编排占用的端口：`8080`(app) / `5432`(postgres) / `6379`(redis) / `5672`+`15672`(rabbitmq) / `11434`(ollama)。
 
 打开首页若返回 `500 No static resource .`，说明当前进程是页面加入之前启动的旧进程，重启即可（H2 是文件库，已录入的数据不会丢）。
 
@@ -499,6 +505,38 @@ bash scripts/run-postgres-local.sh      # 与 compose 里 app 服务完全相同
 | PG 上跑通录入 / 分析 / RAG 检索 / 会话记忆 | ✅ 实测 |
 | `docker-compose.yml` YAML 语法与 env 契约 | ✅ 校验通过 |
 | **镜像构建与 `docker compose up`** | ⚠️ **未实测**（开发机没装 Docker） |
+
+---
+
+## 2.10 缓存与降级设计
+
+**缓存解决什么问题**：LLM 调用按 token 收费且单次耗时 3~10 秒，同一份内容重复分析既慢又烧钱。
+
+| 机制 | 说明 |
+|---|---|
+| 分析结果缓存 | key = `prompt版本` + `记录id` + `内容指纹`，内容相同**不重复调用模型** |
+| 自动失效 | 指纹覆盖题目 / 回答 / 反馈 / 打分，任一变化 key 自动变，无需手工清理 |
+| Prompt 版本 | 改 System Prompt 时递增 `PROMPT_VERSION`，旧缓存自然失效 |
+| 检索缓存 | 检索结果缓存 `kbsearch:*`，入库 / 删文档后按前缀批量失效 |
+| 防穿透 | 空结果也写入短 TTL 缓存，避免同一无效请求反复打到模型 |
+
+**降级原则**：Redis、向量库、Ollama、模型 API 都是**可降级组件**：
+
+| 组件不可用 | 表现 |
+|---|---|
+| Redis | 缓存读写静默失败，主流程照常执行（指标 `result="error"` 上升；连续失败只告警一次，避免日志风暴） |
+| 向量库 / Ollama | 检索 503，分析退化为不带知识上下文；录入与报告回看不受影响 |
+| 模型 API（无 Key） | 自动切离线桩模式，除 LLM 外的链路全部可跑 |
+
+**为什么它们不参与存活判定**：Redis / MQ 挂掉时应用仍然可用，
+所以 `/actuator/health` 不会因这两个组件变成 DOWN —— 否则会触发误告警和不必要的重启。
+
+已验证的两条路径：
+
+```text
+无 Redis：接口全部 200，app_cache_requests{result="error"} 上升，主流程不受影响
+有 Redis：第 1 次分析 miss → 写入；第 2 次相同请求 hit = 1，不再调用模型
+```
 
 ---
 
