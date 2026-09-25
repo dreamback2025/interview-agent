@@ -709,6 +709,51 @@ RATELIMIT_QPM=60 ./run.sh
 
 ---
 
+## 2.14 可观测性（traceId 全链路 + LLM/RAG 指标）
+
+排查 LLM 应用问题最大的痛点：一次分析涉及「HTTP 请求 → RAG 检索 → LLM 调用 → 落库 → 异步任务」，没有 traceId 时日志无法串联。本项目做了三件事。
+
+### traceId 全链路
+
+| 环节 | 做法 |
+|---|---|
+| HTTP 请求 | `TraceIdFilter`（`@Order(HIGHEST_PRECEDENCE)`，SecurityFilter 之前）生成 UUID 短码，入 MDC + 响应头 `X-Trace-Id` |
+| 客户端透传 | 请求头带 `X-Trace-Id` 则沿用（跨服务调用链场景） |
+| 异步线程池 | `MdcTaskDecorator` 装饰 ThreadPoolTaskExecutor，提交线程的 MDC 复制到执行线程 |
+| MQ 消费者 | 不在 HTTP 线程，`AnalysisTaskConsumer` 自己生成 traceId |
+| 日志格式 | `logging.pattern.level: '%-5level [%X{traceId:-}]'`，每条日志带 traceId |
+
+实测：连发两次健康检查，响应头 `X-Trace-Id` 分别为 `d1f5ed395f584d90` / `b4d4d81459ae490c`（唯一）；传 `X-Trace-Id: my-trace-123` 则响应头沿用 `my-trace-123`；日志里出现 `[e83ebd63d44b4359]`。
+
+### LLM 与 RAG 调用指标（Micrometer → Prometheus）
+
+用 AOP 切面切接口方法，impl 无感知（未来加新实现自动被监控）：
+
+| 指标 | 切点 | 含义 |
+|---|---|---|
+| `llm_call_duration_seconds{method,result}` | `LlmService.chat/structured` | LLM 调用耗时分布（直方图，P50/P95 可查）|
+| `rag_search_duration_seconds{result}` | `KnowledgeService.search` | 检索耗时（含 embedding + 向量库 + 缓存命中/未命中）|
+| `app_ratelimit_total{result}` | `@RateLimit` 切面 | 限流 allowed/denied/error |
+| `app_cache_requests_total{result}` | `CacheService` | 缓存 hit/miss/error |
+| `app_task_dispatched_total{channel}` | `TaskDispatcher` | 异步任务投递 mq/pool/mq_fallback |
+| `app_task_finished_total{result}` | `TaskExecutor` | 异步任务 success/failure/skipped |
+
+实测（stub 模式 + 真实 Redis/PG/Ollama）：
+
+```
+llm_call_duration_seconds{method=structured,result=success}  count=1  sum=0.036s
+rag_search_duration_seconds{result=success}                   count=2  sum=1.949s  max=1.916s
+app_ratelimit_total{result=allowed} 1.0
+```
+
+> stub 模式下 LLM 调用是本地规则（36ms）；换真实 DeepSeek 后这个指标会到 3~10s，是成本与延迟监控的核心。
+
+### 为什么用 AOP 切面而不是改 impl
+
+`DeepSeekLlmService` 是 `@Bean new` 出来的，注入 MeterRegistry 要改构造；用 AOP 切 `LlmService` 接口，impl 零改动，未来加新实现（如换 Qwen）也自动被监控。
+
+---
+
 ## 3. 数据存储
 
 ### 先搞清楚数据在哪个库（多实例容易搞混）
@@ -828,6 +873,7 @@ interview-agent/
 | 异步分析任务（RabbitMQ + 线程池降级 + 幂等） | ✅ |
 | JWT 鉴权 + 多用户数据隔离 | ✅ |
 | 按用户限流（滑动窗口 + Redis Lua） | ✅ |
+| 可观测性（traceId 全链路 + LLM/RAG 指标） | ✅ |
 
 ---
 

@@ -118,3 +118,6 @@ management:
 logging:
   level:
     org.hibernate.SQL: warn
+  # 日志级别字段带 traceId（MDC 由 TraceIdFilter 注入，未设置时显示空）
+  pattern:
+    level: '%-5level [%X{traceId:-}]'

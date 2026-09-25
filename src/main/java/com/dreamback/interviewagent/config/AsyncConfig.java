@@ -1,6 +1,7 @@
 package com.dreamback.interviewagent.config;
 
 import java.util.concurrent.ThreadPoolExecutor;
+import com.dreamback.interviewagent.async.MdcTaskDecorator;
 import org.springframework.amqp.core.Queue;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -34,6 +35,8 @@ public class AsyncConfig {
         executor.setQueueCapacity(200);
         executor.setThreadNamePrefix("analysis-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        // 把提交线程的 traceId 复制到执行线程，异步任务日志也能和请求关联
+        executor.setTaskDecorator(new MdcTaskDecorator());
         executor.initialize();
         return executor;
     }
