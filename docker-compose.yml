@@ -24,7 +24,10 @@ services:
       POSTGRES_DB: interview_vector
       TZ: Asia/Shanghai
     ports:
-      - "5432:5432"
+      # 宿主机端口可覆盖：本机若已装 PostgreSQL（brew 默认占 5432），用
+      #   POSTGRES_HOST_PORT=5433 docker compose up -d
+      # 容器内的 app 走服务名 postgres:5432，不受这个映射影响
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
       - ./db/init-vector.sql:/docker-entrypoint-initdb.d/10-init-vector.sql:ro

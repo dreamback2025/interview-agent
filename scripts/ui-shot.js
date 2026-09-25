@@ -18,7 +18,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     args: ['--no-sandbox', '--disable-gpu', '--hide-scrollbars'],
   });
   const page = await browser.newPage();
-  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 2 });
+  // deviceScaleFactor=1 + 适中视口：GitHub README 渲染超大图（如 2880x1800）会失败/超时，
+  // 表现为图片显示成破损图标。这里刻意输出 ~1280 宽、百 KB 以内的图，保证能正常渲染。
+  await page.setViewport({ width: 1280, height: 860, deviceScaleFactor: 1 });
 
   await page.goto(BASE, { waitUntil: 'networkidle2', timeout: 60000 });
 

@@ -126,17 +126,17 @@ bash scripts/verify-all.sh     # 全功能自检：28 项，逐项 PASS/FAIL
 
 **登录**：默认开启 JWT 鉴权，未登录时业务区被遮罩挡住；演示账号 `demo / demo123` 随启动自动创建，也可现场注册。
 
-![登录](docs/screenshots/00-login.png)
+<img src="docs/screenshots/00-login.png" width="720" alt="登录">
 
 **录入与分析**：填表录入面试 → 左侧历史记录 → 右侧详情。分析完成后，弱项会**回写到题目卡片**上（红框标注）。顶栏显示当前用户与所属数据库。
 
-![录入与历史](docs/screenshots/01-overview.png)
+<img src="docs/screenshots/01-overview.png" width="720" alt="录入与历史">
 
-![详情与分析](docs/screenshots/02-detail-report.png)
+<img src="docs/screenshots/02-detail-report.png" width="720" alt="详情与分析">
 
 **知识库（RAG）**：文档列表带片段数与删除按钮，删除会连带清掉该文档的全部向量片段。
 
-![知识库](docs/screenshots/03-knowledge-base.png)
+<img src="docs/screenshots/03-knowledge-base.png" width="720" alt="知识库">
 
 ---
 
@@ -470,15 +470,57 @@ docker compose exec ollama ollama pull bge-m3      # 首次要拉模型（1.2GB�
 # 浏览器打开 http://localhost:8080
 ```
 
-三个服务：`postgres`（业务表 + 向量表同库）、`ollama`（本地 embedding）、`app`。
-早先的 `mysql` / `redis` 收进 `legacy` profile，默认不启动（`docker compose --profile legacy up -d` 才起）。
+五个服务：
+
+| 服务 | 作用 | 挂掉会怎样 |
+|---|---|---|
+| `postgres` | 业务表 + 向量表（同库），pgvector 已内置 | 应用起不来 —— 唯一强依赖 |
+| `ollama` | 本地 embedding（bge-m3） | RAG 检索 503，其余功能正常 |
+| `redis` | 结果缓存 / 限流计数 | 自动跳过缓存、限流放行 |
+| `rabbitmq` | 异步分析任务队列 | 自动降级为本地线程池 |
+| `app` | 应用本身 | — |
+
+早先的 `mysql` 收进 `legacy` profile，默认不启动（`docker compose --profile legacy up -d` 才起）。
+
+### 数据库完全容器化（不需要本机装 PostgreSQL）
+
+| 项 | 做法 |
+|---|---|
+| 镜像 | `pgvector/pgvector:pg16` —— pgvector 扩展已内置，不用手动编译 |
+| 初始化 | `db/init-vector.sql` 挂到 `/docker-entrypoint-initdb.d/`，首启自动 `CREATE EXTENSION vector` |
+| 持久化 | 命名卷 `pg-data`，容器删掉数据还在 |
+| 端口 | 宿主机端口 `${POSTGRES_HOST_PORT:-5432}`；**本机已装 PostgreSQL（brew 默认占 5432）时用 `POSTGRES_HOST_PORT=5433` 覆盖**，否则端口冲突起不来 |
+
+```bash
+# 本机已装 PostgreSQL 时这样起
+POSTGRES_HOST_PORT=5433 docker compose up -d postgres
+
+# 验证
+docker exec interview-postgres psql -U interview -d interview_vector \
+  -c "SELECT extversion FROM pg_extension WHERE extname='vector';"
+```
+
+**实测记录**（容器数据库 + 容器 Redis/RabbitMQ + 本机 Ollama）：
+
+```text
+容器状态     healthy（PostgreSQL 16.15，pgvector 0.8.6）
+中文分词     to_tsvector('simple','mysql 索引 引失 失效') 正常 → 混合检索的关键词通道可用
+应用自检     34/34 通过、0 失败
+数据落库     9 张业务表、6 个 chunk 全部回填了 content_tokens
+```
+
+> 踩过的坑：初始化脚本曾用 `#` 写注释 —— **PostgreSQL 不认 `#`（那是 MySQL 语法）**，
+> 导致 `syntax error at or near "#"`、容器启动即退出。而且首次初始化失败后
+> **必须连数据卷一起删**（`docker compose down postgres -v`）才能重来，否则会跳过 initdb.d。
 
 ### 架构
 
 ```mermaid
 flowchart LR
   U[浏览器 / curl] -->|HTTP :8080| APP[interview-agent<br/>Spring Boot 3.5 + Java 21]
-  APP -->|JDBC<br/>业务表 + vector_store| PG[(PostgreSQL + pgvector<br/>:5432)]
+  APP -->|JDBC<br/>业务表 + vector_store| PG[(PostgreSQL + pgvector<br/>容器 :5432)]
+  APP -->|缓存 / 限流计数| RD[(Redis<br/>容器 :6379)]
+  APP -->|异步分析任务| MQ[(RabbitMQ<br/>容器 :5672)]
   APP -->|HTTP :11434<br/>embedding bge-m3| OL[Ollama]
   APP -->|HTTPS<br/>chat / tool calling| DS[DeepSeek API]
 ```
@@ -516,8 +558,11 @@ bash scripts/run-postgres-local.sh      # 与 compose 里 app 服务完全相同
 |---|---|
 | `application-postgres.yml`：PG 上自动建 6 张业务表（含 `position` 关键字转义） | ✅ 实测 |
 | PG 上跑通录入 / 分析 / RAG 检索 / 会话记忆 | ✅ 实测 |
+| **容器数据库**（`pgvector/pgvector:pg16` + 初始化脚本 + 持久化卷） | ✅ 实测（PG 16.15 / pgvector 0.8.6 / 自检 34/34） |
+| 容器 Redis / RabbitMQ 与应用的联动（缓存命中 / MQ 投递） | ✅ 实测 |
 | `docker-compose.yml` YAML 语法与 env 契约 | ✅ 校验通过 |
-| **镜像构建与 `docker compose up`** | ⚠️ **未实测**（开发机没装 Docker） |
+| **应用镜像构建 `docker build`（多阶段）** | ⚠️ 未实测 |
+| **`docker compose up -d --build` 全量一键起** | ⚠️ 未实测（建议先单独起 postgres 验证，再全量） |
 
 ---
 
