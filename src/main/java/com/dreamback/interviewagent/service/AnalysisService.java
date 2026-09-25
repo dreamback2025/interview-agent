@@ -10,6 +10,7 @@ import com.dreamback.interviewagent.entity.InterviewRecord;
 import com.dreamback.interviewagent.llm.LlmService;
 import com.dreamback.interviewagent.repository.InterviewAnalysisRepository;
 import com.dreamback.interviewagent.repository.InterviewRecordRepository;
+import com.dreamback.interviewagent.security.UserContext;
 import com.dreamback.interviewagent.util.Digest;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -73,11 +74,11 @@ public class AnalysisService {
     private final ObjectMapper objectMapper;
     /** 用 ObjectProvider：缓存关闭时不创建 bean，避免注入失败 */
     private final ObjectProvider<CacheService> cacheProvider;
+    private final UserContext userContext;
 
     @Transactional
     public AnalysisReport analyze(Long recordId) {
-        InterviewRecord record = recordRepository.findByIdWithQuestions(recordId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "面试记录不存在: " + recordId));
+        InterviewRecord record = loadRecordWithQuestions(recordId);
         if (record.getQuestions() == null || record.getQuestions().isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该记录没有任何题目，无法分析");
         }
@@ -116,13 +117,22 @@ public class AnalysisService {
             sb.append(nvl2(q.getQuestion())).append('|').append(nvl2(q.getMyAnswer())).append('|')
               .append(nvl2(q.getFeedback())).append('|').append(q.getScore()).append('|');
         }
-        return "analysis:" + PROMPT_VERSION + ":" + r.getId() + ":" + Digest.sha256Short(sb.toString());
+        return "analysis:" + PROMPT_VERSION + ":" + r.getUserId() + ":" + r.getId()
+                + ":" + Digest.sha256Short(sb.toString());
+    }
+
+    /** 按「记录 id + 当前用户」加载，越权视为不存在。Agent 模式也复用这个加载逻辑 */
+    public InterviewRecord loadRecordWithQuestions(Long recordId) {
+        Long uid = userContext.currentUserId().orElse(null);
+        return (uid == null
+                ? recordRepository.findById(recordId)
+                : recordRepository.findByIdWithQuestionsAndUserId(recordId, uid))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "面试记录不存在: " + recordId));
     }
 
     /** 供 Agent 模式复用：只落库，不重复分析 */
     public void saveAnalysis(Long recordId, AnalysisReport report) {
-        InterviewRecord record = recordRepository.findById(recordId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "面试记录不存在: " + recordId));
+        InterviewRecord record = loadRecordWithQuestions(recordId);
         saveAnalysis(record, report);
     }
 
@@ -171,6 +181,7 @@ public class AnalysisService {
             InterviewAnalysis entity = new InterviewAnalysis();
             entity.setRecord(record);
             entity.setModel(llmService.mode());
+            entity.setUserId(record.getUserId());
             entity.setSummary(report.getSummary());
             entity.setReportJson(objectMapper.writeValueAsString(report));
             analysisRepository.save(entity);
@@ -181,6 +192,8 @@ public class AnalysisService {
 
     @Transactional(readOnly = true)
     public List<AnalysisHistoryItem> history(Long recordId) {
+        // 先确认这条记录是当前用户的，避免通过历史接口越权看别人的报告
+        loadRecordWithQuestions(recordId);
         return analysisRepository.findByRecordIdOrderByCreatedAtDesc(recordId).stream()
                 .map(a -> {
                     AnalysisHistoryItem item = new AnalysisHistoryItem();
@@ -196,13 +209,19 @@ public class AnalysisService {
 
     @Transactional(readOnly = true)
     public List<AnalysisRecordDto> all() {
-        return analysisRepository.findAll().stream().map(this::toDto).toList();
+        Long uid = userContext.currentUserId().orElse(null);
+        var list = uid == null ? analysisRepository.findAll() : analysisRepository.findByUserIdOrderByCreatedAtDesc(uid);
+        return list.stream().map(this::toDto).toList();
     }
 
     @Transactional(readOnly = true)
     public AnalysisRecordDto getAnalysis(Long analysisId) {
+        Long uid = userContext.currentUserId().orElse(null);
         InterviewAnalysis a = analysisRepository.findById(analysisId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "分析报告不存在: " + analysisId));
+        if (uid != null && !uid.equals(a.getUserId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "分析报告不存在: " + analysisId);
+        }
         return toDto(a);
     }
 
@@ -221,15 +240,15 @@ public class AnalysisService {
     }
 
     public String buildUserPrompt(InterviewRecord r) {
-        return doBuildUserPrompt(r) + retrieveKnowledgeContext(r) + memoryService.recentInsights(r.getId(), 3);
+        return doBuildUserPrompt(r) + retrieveKnowledgeContext(r)
+                + memoryService.recentInsights(r.getUserId(), r.getId(), 3);
     }
 
     /**
      * 流式复盘：输出 Markdown（不是 JSON，因为流式无法做结构化校验），逐段推给前端。
      */
     public Flux<String> streamAnalysis(Long recordId) {
-        InterviewRecord record = recordRepository.findByIdWithQuestions(recordId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "面试记录不存在: " + recordId));
+        InterviewRecord record = loadRecordWithQuestions(recordId);
         if (record.getQuestions() == null || record.getQuestions().isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该记录没有任何题目，无法分析");
         }

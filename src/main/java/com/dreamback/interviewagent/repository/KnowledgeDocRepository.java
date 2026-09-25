@@ -7,7 +7,9 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface KnowledgeDocRepository extends JpaRepository<KnowledgeDoc, Long> {
 
-    List<KnowledgeDoc> findByOrderByCreatedAtDesc();
+    List<KnowledgeDoc> findByUserIdOrderByCreatedAtDesc(Long userId);
 
-    Optional<KnowledgeDoc> findByDocId(String docId);
+    Optional<KnowledgeDoc> findByDocIdAndUserId(String docId, Long userId);
+
+    long countByUserId(Long userId);
 }

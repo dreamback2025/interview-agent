@@ -9,6 +9,7 @@ import com.dreamback.interviewagent.entity.AnalysisTask;
 import com.dreamback.interviewagent.entity.TaskStatus;
 import com.dreamback.interviewagent.repository.AnalysisTaskRepository;
 import com.dreamback.interviewagent.repository.InterviewAnalysisRepository;
+import com.dreamback.interviewagent.security.UserContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import java.util.Comparator;
@@ -42,13 +43,14 @@ public class AnalysisTaskController {
     private final TaskDispatcher dispatcher;
     private final AnalysisTaskRepository taskRepo;
     private final InterviewAnalysisRepository analysisRepo;
+    private final UserContext userContext;
     private final ObjectMapper objectMapper;
 
     /** 提交任务：202 Accepted，不等模型返回 */
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
     public TaskSubmitResponse submit(@Valid @RequestBody TaskSubmitRequest req) {
-        AnalysisTask t = dispatcher.submit(req.recordId());
+        AnalysisTask t = dispatcher.submit(req.recordId(), currentUserId());
         log.info("任务已提交：taskId={} recordId={} 通道={}", t.getTaskId(), t.getRecordId(), t.getDispatchMode());
         return toSubmit(t);
     }
@@ -56,15 +58,16 @@ public class AnalysisTaskController {
     /** 查任务状态；成功后直接带报告回来 */
     @GetMapping("/{taskId}")
     public TaskStatusResponse status(@PathVariable String taskId) {
-        return toStatus(find(taskId));
+        return toStatus(find(taskId, currentUserId()));
     }
 
-    /** 最近 20 条任务，可按记录过滤 */
+    /** 最近 20 条任务（只列当前用户的） */
     @GetMapping
-    public List<TaskStatusResponse> list(@RequestParam(required = false) Long recordId) {
-        List<AnalysisTask> tasks = recordId == null
+    public List<TaskStatusResponse> list() {
+        Long uid = currentUserId();
+        List<AnalysisTask> tasks = uid == null
                 ? taskRepo.findAll()
-                : taskRepo.findByRecordIdOrderByCreatedAtDesc(recordId);
+                : taskRepo.findByUserIdOrderByCreatedAtDesc(uid);
         return tasks.stream()
                 .sorted(Comparator.comparing(AnalysisTask::getId).reversed())
                 .limit(20)
@@ -75,19 +78,27 @@ public class AnalysisTaskController {
     /** 失败任务重试：状态重置为 PENDING 后重新投递（taskId 不变） */
     @PostMapping("/{taskId}/retry")
     public TaskSubmitResponse retry(@PathVariable String taskId) {
-        AnalysisTask t = find(taskId);
+        Long uid = currentUserId();
+        AnalysisTask t = find(taskId, uid);
         if (t.getStatus() != TaskStatus.FAILED) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "只有失败的任务可以重试，当前状态：" + t.getStatus());
         }
-        String channel = dispatcher.redispatch(taskId);
+        String channel = dispatcher.redispatch(taskId, uid);
         log.info("任务重新投递：taskId={} 通道={}", taskId, channel);
-        return toSubmit(find(taskId));
+        return toSubmit(find(taskId, uid));
     }
 
-    private AnalysisTask find(String taskId) {
-        return taskRepo.findByTaskId(taskId)
+    /** 别人的任务查不到 —— 拿 taskId 撞库也读不到，避免越权 */
+    private AnalysisTask find(String taskId, Long userId) {
+        return (userId == null
+                ? taskRepo.findByTaskId(taskId)
+                : taskRepo.findByTaskIdAndUserId(taskId, userId))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在: " + taskId));
+    }
+
+    private Long currentUserId() {
+        return userContext.currentUserId().orElse(null);
     }
 
     private TaskSubmitResponse toSubmit(AnalysisTask t) {

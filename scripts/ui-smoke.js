@@ -28,6 +28,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 (async () => {
   await sleep(1200);
 
+  // 页面已加鉴权：未登录时只显示登录遮罩，业务请求一律 401，所以先登录
+  console.log('0) 登录遮罩      :', $('loginOverlay').style.display === 'none' ? '未显示' : '已显示（未登录）');
+  $('loginUser').value = process.env.SMOKE_USER || 'demo';
+  $('loginPass').value = process.env.SMOKE_PASS || 'demo123';
+  $('loginBtn').click();
+  await sleep(3000);                 // 等登录 + bootApp 拉完列表
+  const loggedIn = $('loginOverlay').style.display === 'none';
+  console.log('0.5) 登录结果    :', loggedIn ? '成功（遮罩已隐藏）' : ('失败: ' + $('loginErr').textContent));
+  console.log('0.6) 当前用户    :', $('userBar').textContent || '(空)');
+
   console.log('1) 模式徽章      :', $('mode').textContent);
   console.log('1.5) 当前库信息  :', ($('dbInfo') ? $('dbInfo').textContent : '(未渲染)'));
   console.log('2) 初始题目行数  :', doc.querySelectorAll('#questions .q-item').length, '(应为 1)');
@@ -93,10 +103,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const sb = $('streamBtn');
   if (sb) {
     sb.click();
-    await sleep(30000);
+    await sleep(12000);
     const out = $('streamOut');
     const t = out ? out.textContent : '';
     console.log('24) 流式复盘输出 :', t.length + ' 字, 含「复盘报告」:', t.includes('复盘报告') ? '是' : '否');
+    if (!t) console.log('24.1) 面板内容  :', ($('report').textContent || '(空)').slice(0, 150));
   } else {
     console.log('24) 未找到流式按钮');
   }

@@ -7,18 +7,21 @@ import com.dreamback.interviewagent.dto.SearchResult;
 import com.dreamback.interviewagent.entity.KnowledgeDoc;
 import com.dreamback.interviewagent.rag.TextSplitter;
 import com.dreamback.interviewagent.repository.KnowledgeDocRepository;
+import com.dreamback.interviewagent.security.UserContext;
 import com.dreamback.interviewagent.util.Digest;
 import com.fasterxml.jackson.core.type.TypeReference;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.filter.Filter;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -36,6 +39,7 @@ public class KnowledgeService {
     private final ObjectProvider<VectorStore> vectorStoreProvider;
     /** 缓存同样可关闭，用 ObjectProvider 取 */
     private final ObjectProvider<CacheService> cacheProvider;
+    private final UserContext userContext;
 
     private static final String SEARCH_CACHE_PREFIX = "kbsearch:";
 
@@ -44,6 +48,7 @@ public class KnowledgeService {
         if (chunks.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "内容为空，无可入库片段");
         }
+        Long uid = userContext.currentUserId().orElse(null);
 
         String docId = UUID.randomUUID().toString();
         List<Document> docs = new ArrayList<>();
@@ -54,6 +59,10 @@ public class KnowledgeService {
             meta.put("source", nvl(req.getSource()));
             meta.put("tags", nvl(req.getTags()));
             meta.put("chunkIndex", i);
+            // 向量 metadata 带上 userId：检索时在向量库层就过滤掉别人的笔记
+            if (uid != null) {
+                meta.put("userId", uid);
+            }
             docs.add(new Document(chunks.get(i), meta));
         }
         store().add(docs);
@@ -64,6 +73,7 @@ public class KnowledgeService {
         doc.setSource(req.getSource());
         doc.setTags(req.getTags());
         doc.setChunkCount(chunks.size());
+        doc.setUserId(uid);
         docRepository.save(doc);
 
         evictSearchCache();
@@ -74,10 +84,12 @@ public class KnowledgeService {
         if (query == null || query.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "q 不能为空");
         }
+        Long uid = userContext.currentUserId().orElse(null);
 
-        // 热点查询缓存：省掉一次 embedding + 向量检索（实测这两步占检索耗时的绝大部分）
+        // 热点查询缓存：省掉一次 embedding + 向量检索（实测这两步占检索耗时的绝大部分）。
+        // key 必须带 userId —— 否则别的用户的检索结果会被缓存命中后返回给当前用户，造成越权。
         CacheService cache = cacheProvider.getIfAvailable();
-        String cacheKey = SEARCH_CACHE_PREFIX + topK + ":" + Digest.sha256Short(query);
+        String cacheKey = SEARCH_CACHE_PREFIX + uid + ":" + topK + ":" + Digest.sha256Short(query);
         if (cache != null) {
             List<SearchResult> cached = cache.getTyped(cacheKey, new TypeReference<List<SearchResult>>() { });
             if (cached != null) {
@@ -85,8 +97,11 @@ public class KnowledgeService {
             }
         }
 
-        var hits = store().similaritySearch(
-                SearchRequest.builder().query(query).topK(topK).build());
+        SearchRequest.Builder b = SearchRequest.builder().query(query).topK(topK);
+        if (uid != null) {
+            b.filterExpression(new FilterExpressionBuilder().eq("userId", uid).build());
+        }
+        var hits = store().similaritySearch(b.build());
 
         List<SearchResult> out = new ArrayList<>();
         for (Document d : hits) {
@@ -114,7 +129,8 @@ public class KnowledgeService {
     }
 
     public List<KnowledgeDoc> docs() {
-        return docRepository.findByOrderByCreatedAtDesc();
+        Long uid = userContext.currentUserId().orElse(null);
+        return uid == null ? docRepository.findAll() : docRepository.findByUserIdOrderByCreatedAtDesc(uid);
     }
 
     /** 删除一篇文档：先删 pgvector 里该 docId 的所有 chunk，再删目录记录 */
@@ -123,12 +139,20 @@ public class KnowledgeService {
         if (docId == null || docId.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "docId 不能为空");
         }
+        Long uid = userContext.currentUserId().orElse(null);
+        Optional<KnowledgeDoc> doc = uid == null
+                ? docRepository.findAll().stream().filter(d -> docId.equals(d.getDocId())).findFirst()
+                : docRepository.findByDocIdAndUserId(docId, uid);
+        if (doc.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文档不存在: " + docId);
+        }
+
         Filter.Expression expr = new Filter.Expression(
                 Filter.ExpressionType.EQ,
                 new Filter.Key("docId"),
                 new Filter.Value(docId));
         store().delete(expr);
-        docRepository.findByDocId(docId).ifPresent(docRepository::delete);
+        docRepository.delete(doc.get());
         evictSearchCache();
     }
 

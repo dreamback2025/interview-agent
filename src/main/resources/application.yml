@@ -57,6 +57,18 @@ app:
   llm:
     # 显式强制离线桩模式（未配置 Key 时也会自动降级）
     stub: ${LLM_STUB:false}
+  security:
+    # 鉴权总开关：true = JWT 无状态鉴权；false = 全部放行（单用户自用/本地调试）
+    enabled: ${SECURITY_ENABLED:true}
+    jwt:
+      # ⚠️ 默认值仅供本地开发，生产必须用环境变量覆盖：
+      #    export JWT_SECRET="$(openssl rand -base64 48)"
+      # HS256 要求密钥 ≥ 32 字节，太短会在启动时直接报错（快速失败，而不是悄悄用弱密钥）
+      secret: ${JWT_SECRET:dev-only-secret-change-me-before-deploy-0123456789abcdef}
+      ttl-seconds: ${JWT_TTL:86400}
+  demo-user:
+    # 启动时确保存在演示账号（demo/demo123），便于开箱验证鉴权链路；生产建议关闭
+    enabled: ${DEMO_USER_ENABLED:true}
   debug:
     # /api/debug/* 调试端点（会暴露连接串与注入给模型的 prompt 原文）
     # 对外部署时设为 false 或只在内网开启

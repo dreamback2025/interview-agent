@@ -40,6 +40,10 @@ public class InterviewAnalysis {
     @Column(name = "report_json", columnDefinition = "TEXT")
     private String reportJson;
 
+    /** 数据隔离：冗余一份 userId，避免回看报告时还要 join 记录表 */
+    @Column(name = "user_id")
+    private Long userId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

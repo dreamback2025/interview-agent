@@ -38,6 +38,10 @@ public class KnowledgeDoc {
     @Column(name = "chunk_count")
     private int chunkCount;
 
+    /** 数据隔离：知识库按用户隔离，检索时也会用 metadata 里的 userId 过滤 */
+    @Column(name = "user_id")
+    private Long userId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

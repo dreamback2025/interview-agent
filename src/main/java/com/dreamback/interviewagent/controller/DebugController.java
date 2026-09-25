@@ -3,6 +3,7 @@ package com.dreamback.interviewagent.controller;
 import com.dreamback.interviewagent.repository.InterviewAnalysisRepository;
 import com.dreamback.interviewagent.repository.InterviewRecordRepository;
 import com.dreamback.interviewagent.repository.KnowledgeDocRepository;
+import com.dreamback.interviewagent.security.UserContext;
 import com.dreamback.interviewagent.service.MemoryService;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -26,12 +27,14 @@ public class DebugController {
     private final InterviewRecordRepository recordRepository;
     private final InterviewAnalysisRepository analysisRepository;
     private final KnowledgeDocRepository docRepository;
+    private final UserContext userContext;
     private final Environment environment;
 
     @GetMapping("/memory")
     public String memory(@RequestParam(required = false) Long excludeRecordId,
                          @RequestParam(defaultValue = "3") int limit) {
-        String ctx = memoryService.recentInsights(excludeRecordId, limit);
+        // 只展示当前用户自己的历史记忆，避免调试端点越权泄露别人的复盘结论
+        String ctx = memoryService.recentInsights(userContext.currentUserId().orElse(null), excludeRecordId, limit);
         return ctx.isBlank() ? "（无历史记忆：其他记录还没有分析结果，或 app.memory.enabled=false）" : ctx;
     }
 

@@ -99,14 +99,45 @@
   }
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   #toast.err { background: var(--danger); }
+  /* ---------- 登录 ---------- */
+  #loginOverlay {
+    position: fixed; inset: 0; background: rgba(17,24,39,.5); z-index: 100;
+    display: none; align-items: center; justify-content: center;
+  }
+  #loginOverlay .box {
+    background: #fff; border-radius: 12px; padding: 24px 26px; width: 340px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.2);
+  }
+  #loginOverlay h2 { margin: 0 0 4px; font-size: 18px; }
+  #loginOverlay .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  #loginOverlay input { width: 100%; margin-bottom: 10px; box-sizing: border-box; }
+  #loginOverlay button { width: 100%; }
+  .userbar { font-size: 12px; color: var(--muted); margin-left: 8px; }
 </style>
 </head>
 <body>
+
+<div id="loginOverlay">
+  <div class="box">
+    <h2>登录</h2>
+    <div class="sub">演示账号：demo / demo123</div>
+    <input id="loginUser" placeholder="用户名" autocomplete="username">
+    <input id="loginPass" type="password" placeholder="密码" autocomplete="current-password">
+    <div class="err" id="loginErr"></div>
+    <button id="loginBtn">登录</button>
+    <div class="hint" style="margin-top:10px">
+      没有账号？<button class="tiny" id="registerBtn" type="button" style="margin-left:4px">注册</button>
+    </div>
+  </div>
+</div>
+
 <div class="wrap">
   <header>
     <h1>面试复盘 Agent</h1>
     <span id="mode" class="badge">检测模型状态…</span>
     <span id="dbInfo" class="ts" style="font-size:12px;color:var(--muted)"></span>
+    <span class="userbar" id="userBar"></span>
+    <button class="ghost" id="logoutBtn" style="display:none">退出</button>
     <button class="ghost" id="exportBtn" style="margin-left:auto">导出 JSON</button>
   </header>
 
@@ -251,11 +282,44 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+/* ---------- 鉴权（JWT） ---------- */
+const TOKEN_KEY = 'ia_token';
+let TOKEN = localStorage.getItem(TOKEN_KEY) || '';
+
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  if (TOKEN) h['Authorization'] = 'Bearer ' + TOKEN;
+  return h;
+}
+
+function showLogin(msg) {
+  const ov = $('loginOverlay');
+  if (!ov) return;
+  ov.style.display = 'flex';
+  if (msg) $('loginErr').textContent = msg;
+  const u = $('loginUser');
+  if (u) u.focus();
+  $('userBar').textContent = '';
+  $('logoutBtn').style.display = 'none';
+}
+
+function clearSession(msg) {
+  TOKEN = '';
+  localStorage.removeItem(TOKEN_KEY);
+  showLogin(msg || '');
+}
+
 async function api(path, options) {
-  const res = await fetch(path, options);
+  const opt = Object.assign({}, options || {});
+  opt.headers = authHeaders(opt.headers);
+  const res = await fetch(path, opt);
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+  if (res.status === 401) {          // token 过期或伪造：清掉本地凭据并回到登录
+    clearSession('登录已过期，请重新登录');
+    throw new Error('未认证（401）');
+  }
   if (!res.ok) {
     const msg = (data && data.message) ? data.message : (text || ('HTTP ' + res.status));
     throw new Error(msg);
@@ -479,7 +543,8 @@ async function streamAnalysis(id) {
   const out = $('streamOut');
   let text = '';
   try {
-    const res = await fetch('/api/interviews/' + id + '/analysis-stream');
+    const res = await fetch('/api/interviews/' + id + '/analysis-stream', { headers: authHeaders() });
+    if (res.status === 401) { clearSession('登录已过期，请重新登录'); throw new Error('未认证（401）'); }
     if (!res.ok) throw new Error('HTTP ' + res.status);
     if (!res.body || !res.body.getReader) throw new Error('当前环境不支持流式读取');
 
@@ -500,7 +565,14 @@ async function streamAnalysis(id) {
     }
     toast('流式复盘完成');
   } catch (e) {
-    box.innerHTML = '<div class="err">流式复盘失败：' + esc(e.message) + '</div>';
+    // 流可能在中途被中断：服务端提前关闭、代理超时、网络抖动……
+    // 只要已经收到内容就保留下来，而不是整段丢弃让用户白等一次生成。
+    const got = out ? (out.textContent || '') : '';
+    if (got) {
+      toast('连接提前结束，已保留收到的 ' + got.length + ' 字', true);
+    } else {
+      box.innerHTML = '<div class="err">流式复盘失败：' + esc(e.message) + '</div>';
+    }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '流式复盘'; }
   }
@@ -824,8 +896,46 @@ async function finishMock() {
   }
 }
 
-/* ---------- 初始化 ---------- */
-(async function init() {
+/* ---------- 登录 / 初始化 ---------- */
+const USER_KEY = 'ia_user';
+
+function markLoggedIn(name) {
+  $('loginOverlay').style.display = 'none';
+  $('userBar').textContent = name ? ('· ' + name) : '';
+  $('logoutBtn').style.display = '';
+}
+
+// 登录区（所有业务数据都要求已登录，未登录不发起任何业务请求）
+async function doAuth(isRegister) {
+  const u = $('loginUser').value.trim();
+  const p = $('loginPass').value;
+  const err = $('loginErr');
+  const btn = isRegister ? $('registerBtn') : $('loginBtn');
+  err.textContent = '';
+  if (!u || !p) { err.textContent = '请填写用户名和密码'; return; }
+
+  btn.disabled = true;
+  try {
+    const r = await api('/api/auth/' + (isRegister ? 'register' : 'login'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p })
+    });
+    TOKEN = r.token;
+    localStorage.setItem(TOKEN_KEY, TOKEN);
+    localStorage.setItem(USER_KEY, r.displayName || r.username || u);
+    $('loginPass').value = '';
+    markLoggedIn(r.displayName || r.username);
+    toast(isRegister ? '注册成功，已登录' : '登录成功');
+    await bootApp();
+  } catch (e) {
+    err.textContent = (isRegister ? '注册失败：' : '登录失败：') + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function bootApp() {
   addQuestionRow();
   try {
     const res = await api('/api/llm/mode');
@@ -842,8 +952,9 @@ async function finishMock() {
     $('mode').textContent = '后端未连接';
     $('mode').className = 'badge stub';
   }
-  await loadRecords();
-  await loadKbDocs();
+
+  try { await loadRecords(); } catch (e) { /* 已在 api() 中处理 401 */ }
+  try { await loadKbDocs(); } catch (e) { /* 知识库可选 */ }
 
   // 显示当前实例用的是哪个库、有多少数据（多实例多库时防止看错库）
   try {
@@ -856,6 +967,22 @@ async function finishMock() {
   } catch (e) {
     $('dbInfo').textContent = '';
   }
+}
+
+$('loginBtn').onclick = () => doAuth(false);
+$('registerBtn').onclick = () => doAuth(true);
+$('logoutBtn').onclick = () => { clearSession(); toast('已退出登录'); };
+$('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(false); });
+
+(async function init() {
+  if (!TOKEN) { showLogin(); return; }
+  try {
+    await api('/api/auth/me');         // 本地有 token 也先验一次，过期就回登录页
+  } catch (e) {
+    return;                            // api() 内部已弹回登录
+  }
+  markLoggedIn(localStorage.getItem(USER_KEY) || '');
+  await bootApp();
 })();
 </script>
 </body>

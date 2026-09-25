@@ -2,14 +2,11 @@ package com.dreamback.interviewagent.agent;
 
 import com.dreamback.interviewagent.dto.AnalysisReport;
 import com.dreamback.interviewagent.entity.InterviewRecord;
-import com.dreamback.interviewagent.repository.InterviewRecordRepository;
 import com.dreamback.interviewagent.service.AnalysisService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Agent 模式：模型自主决定要不要调用工具（检索知识库 / 查历史弱项 / 提炼 JD 要求）。
@@ -31,12 +28,11 @@ public class AgentAnalysisService {
 
     private final ChatClient.Builder chatClientBuilder;
     private final InterviewTools interviewTools;
-    private final InterviewRecordRepository recordRepository;
     private final AnalysisService analysisService;
 
     public AnalysisReport analyze(Long recordId) {
-        InterviewRecord record = recordRepository.findByIdWithQuestions(recordId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "面试记录不存在: " + recordId));
+        // 复用 AnalysisService 的加载逻辑：同样按当前用户隔离，越权访问返回 404
+        InterviewRecord record = analysisService.loadRecordWithQuestions(recordId);
 
         try {
             AnalysisReport report = chatClientBuilder

@@ -11,36 +11,33 @@ import java.time.LocalDateTime;
 import lombok.Getter;
 import lombok.Setter;
 
-/** 一场模拟面试。 */
+/**
+ * 应用用户。
+ *
+ * 密码只存 BCrypt 哈希，从不保存明文、也不返回给前端。
+ */
 @Getter
 @Setter
 @Entity
-@Table(name = "mock_session")
-public class MockSession {
+@Table(name = "app_user")
+public class AppUser {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "target_jd", columnDefinition = "TEXT")
-    private String targetJd;
+    @Column(name = "username", length = 64, unique = true, nullable = false)
+    private String username;
 
-    @Column(name = "focus", length = 100)
-    private String focus;
+    @Column(name = "password_hash", length = 100, nullable = false)
+    private String passwordHash;
 
-    /** ACTIVE / FINISHED */
-    @Column(name = "status", length = 20)
-    private String status;
+    @Column(name = "display_name", length = 64)
+    private String displayName;
 
-    @Column(name = "total_score")
-    private Integer totalScore;
-
-    @Column(name = "summary", columnDefinition = "TEXT")
-    private String summary;
-
-    /** 数据隔离 */
-    @Column(name = "user_id")
-    private Long userId;
+    /** USER / ADMIN */
+    @Column(name = "role", length = 20)
+    private String role;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
@@ -49,6 +46,9 @@ public class MockSession {
     void prePersist() {
         if (createdAt == null) {
             createdAt = LocalDateTime.now();
+        }
+        if (role == null) {
+            role = "USER";
         }
     }
 }

@@ -29,14 +29,21 @@ public class MemoryService {
     @Value("${app.memory.enabled:true}")
     private boolean enabled;
 
-    /** 取最近若干次「其他记录」的结论；失败静默返回空串，绝不能拖垮分析 */
+    /**
+     * 取最近若干次「其他记录」的结论；失败静默返回空串，绝不能拖垮分析。
+     *
+     * @param userId 当前用户（为 null 表示免鉴权单用户模式）—— **记忆绝不跨用户**：
+     *               否则 A 的复盘结论会被注入 B 的分析，既是数据泄露也会污染结论。
+     */
     @Transactional(readOnly = true)
-    public String recentInsights(Long excludeRecordId, int limit) {
+    public String recentInsights(Long userId, Long excludeRecordId, int limit) {
         if (!enabled) {
             return "";
         }
         try {
-            List<InterviewAnalysis> list = analysisRepository.findTop8ByOrderByCreatedAtDesc();
+            List<InterviewAnalysis> list = userId == null
+                    ? analysisRepository.findTop8ByOrderByCreatedAtDesc()
+                    : analysisRepository.findTop8ByUserIdOrderByCreatedAtDesc(userId);
             StringBuilder sb = new StringBuilder();
             int n = 0;
             for (InterviewAnalysis a : list) {

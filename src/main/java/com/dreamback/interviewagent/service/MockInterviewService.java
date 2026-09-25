@@ -12,6 +12,7 @@ import com.dreamback.interviewagent.entity.MockTurn;
 import com.dreamback.interviewagent.llm.LlmService;
 import com.dreamback.interviewagent.repository.MockSessionRepository;
 import com.dreamback.interviewagent.repository.MockTurnRepository;
+import com.dreamback.interviewagent.security.UserContext;
 import java.util.ArrayList;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -60,6 +61,7 @@ public class MockInterviewService {
     private final LlmService llmService;
     private final MockSessionRepository sessionRepository;
     private final MockTurnRepository turnRepository;
+    private final UserContext userContext;
 
     /** 出题并建会话 */
     @Transactional
@@ -74,6 +76,7 @@ public class MockInterviewService {
         session.setTargetJd(req.getJd());
         session.setFocus(req.getFocus());
         session.setStatus(STATUS_ACTIVE);
+        session.setUserId(userContext.currentUserId().orElse(null));
         MockSession saved = sessionRepository.save(session);
 
         for (int i = 0; i < set.getQuestions().size(); i++) {
@@ -96,8 +99,7 @@ public class MockInterviewService {
     /** 作答 -> 打分 -> 追问 */
     @Transactional
     public MockAnswerResult answer(MockAnswerRequest req) {
-        MockSession session = sessionRepository.findById(req.getSessionId())
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "模拟面试不存在: " + req.getSessionId()));
+        MockSession session = loadSession(req.getSessionId());
 
         List<MockTurn> turns = turnRepository.findBySessionIdOrderByTurnIndexAscIdAsc(session.getId());
         String question = currentQuestion(turns, req.getQuestionIndex());
@@ -141,8 +143,7 @@ public class MockInterviewService {
     /** 结束并汇总 */
     @Transactional
     public MockFinishResult finish(Long sessionId) {
-        MockSession session = sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "模拟面试不存在: " + sessionId));
+        MockSession session = loadSession(sessionId);
         List<MockTurn> turns = turnRepository.findBySessionIdOrderByTurnIndexAscIdAsc(sessionId);
 
         StringBuilder dialog = new StringBuilder();
@@ -169,8 +170,7 @@ public class MockInterviewService {
 
     @Transactional(readOnly = true)
     public MockSessionDetail detail(Long sessionId) {
-        MockSession session = sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "模拟面试不存在: " + sessionId));
+        MockSession session = loadSession(sessionId);
         MockSessionDetail dto = new MockSessionDetail();
         dto.setSessionId(session.getId());
         dto.setTargetJd(session.getTargetJd());
@@ -190,6 +190,15 @@ public class MockInterviewService {
             dto.getTurns().add(v);
         }
         return dto;
+    }
+
+    /** 按「会话 id + 当前用户」加载；别人的会话查不到，返回 404 而不是 403（不泄露存在性） */
+    private MockSession loadSession(Long sessionId) {
+        Long uid = userContext.currentUserId().orElse(null);
+        return (uid == null
+                ? sessionRepository.findById(sessionId)
+                : sessionRepository.findByIdAndUserId(sessionId, uid))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "模拟面试不存在: " + sessionId));
     }
 
     /** 某题当前要回答的问题（取该题最后一条面试官发言，可能是追问） */

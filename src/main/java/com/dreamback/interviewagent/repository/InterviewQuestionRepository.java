@@ -17,4 +17,16 @@ public interface InterviewQuestionRepository extends JpaRepository<InterviewQues
             + "  or lower(coalesce(q.weakPoints, '')) like lower(concat('%', :topic, '%'))) "
             + "order by q.id desc")
     List<InterviewQuestion> searchWeakPoints(@Param("topic") String topic, Pageable pageable);
+
+    /** 同上，但限定在某个用户的记录范围内（多用户隔离） */
+    @Query("select q from InterviewQuestion q join q.record r "
+            + "where r.userId = :userId "
+            + "and q.weakPoints is not null and q.weakPoints <> '' "
+            + "and (lower(coalesce(q.tags, '')) like lower(concat('%', :topic, '%')) "
+            + "  or lower(coalesce(q.question, '')) like lower(concat('%', :topic, '%')) "
+            + "  or lower(coalesce(q.weakPoints, '')) like lower(concat('%', :topic, '%'))) "
+            + "order by q.id desc")
+    List<InterviewQuestion> searchWeakPointsByUser(@Param("topic") String topic,
+                                                   @Param("userId") Long userId,
+                                                   Pageable pageable);
 }

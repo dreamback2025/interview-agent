@@ -6,9 +6,9 @@
 
 技术栈：Java 21 · Spring Boot 3.5.16 · Spring AI 1.1.8（DeepSeek，OpenAI 协议）· Ollama bge-m3 + PostgreSQL/pgvector · Redis · RabbitMQ · JPA · Docker Compose · SSE · Micrometer/Prometheus
 
-**核心能力**：面试记录结构化落库 · 弱项分析 + 补强建议 · 知识库语义检索（标题切分 + 1024 维向量 + HNSW 索引）· Function Calling（`@Tool` 由模型自主调用）· 多轮模拟面试与打分 · SSE 流式复盘 · 跨记录会话记忆 · **结果缓存与幂等** · 28 项一键自检
+**核心能力**：面试记录结构化落库 · 弱项分析 + 补强建议 · 知识库语义检索（标题切分 + 1024 维向量 + HNSW 索引）· Function Calling（`@Tool` 由模型自主调用）· 多轮模拟面试与打分 · SSE 流式复盘 · 跨记录会话记忆 · 结果缓存与幂等 · 异步分析任务 · **JWT 鉴权与多用户数据隔离** · 34 项一键自检
 
-**工程主线**：用后端手段解决 LLM 应用的规模化问题 —— 慢（缓存 + 幂等）、贵（限流）、不可靠（全链路降级）、不可观测（指标 + traceId）。LLM 与 RAG 只是客��链路的两端，工程难点在中间这段。
+**工程主线**：用后端手段解决 LLM 应用的规模化问题 —— 慢（缓存 + 异步任务）、贵（结果缓存与幂等去重，避免重复烧 token）、不安全（JWT 鉴权 + 多用户数据隔离）、不可靠（全链路降级）、不可观测（Micrometer 指标）。LLM 与 RAG 只是链路的两端，工程难点在中间这段。
 
 > 每一块功能都附**可复现的实测数据**（见下文各节）。
 
@@ -138,8 +138,13 @@ bash scripts/verify-all.sh     # 全功能自检：28 项，逐项 PASS/FAIL
 
 ## 2. 接口清单
 
+> 除下表标注「免鉴权」的接口外，其余都需要请求头 `Authorization: Bearer <token>`，否则返回 401。
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| POST | `/api/auth/register` | **免鉴权** 注册，成功即返回 token |
+| POST | `/api/auth/login` | **免鉴权** 登录换取 token |
+| GET | `/api/auth/me` | 校验 token 是否有效 |
 | GET | `/chat?q=xxx` | 模型联通性冒烟 |
 | GET | `/api/llm/mode` | 当前模式：`deepseek` / `stub` |
 | POST | `/api/interviews` | 录入一次面试（含若干题目） |
@@ -584,6 +589,68 @@ MQ 正常：提交 202（0.09s）  → 通道 mq   → SUCCESS
 
 ---
 
+## 2.12 鉴权与数据隔离
+
+JWT 无状态鉴权 + 全链路数据隔离。**默认开启**，可通过 `SECURITY_ENABLED=false` 关闭（单用户自用/本地调试）。
+
+### 登录与鉴权
+
+```bash
+# 登录（演示账号随启动自动创建）
+curl -X POST localhost:8080/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"demo","password":"demo123"}'
+# → {"token":"eyJ...","expiresIn":86400,"userId":1,"username":"demo","role":"USER"}
+
+# 之后所有业务请求带上 token
+curl -H "Authorization: Bearer <token>" localhost:8080/api/interviews
+```
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/auth/register` | 注册（用户名 3~64、密码 ≥6 位），成功即返回 token |
+| `POST /api/auth/login` | 登录换取 token |
+| `GET /api/auth/me` | 校验 token 是否有效 |
+
+免鉴权路径只有三类：登录注册、`/actuator/**` 健康检查、静态页面。**其余一律要求有效 token**——包括知识库、模拟面试、分析、导出。
+
+### 数据隔离怎么做的
+
+| 层 | 做法 |
+|---|---|
+| 实体 | `interview_record` / `knowledge_doc` / `mock_session` / `analysis_task` / `interview_analysis` 各带 `user_id` |
+| 关联表 | `interview_question` / `mock_turn` 不单独存，通过父实体关联 + 归属校验隔离 |
+| 查询 | 所有列表/详情都走 `...AndUserId(...)`；下游子实体一律先校验父实体归属 |
+| 向量检索 | embedding 的 metadata 写入 `userId`，检索时用 `filterExpression(eq("userId", uid))` **在向量库层就过滤掉别人的笔记** |
+| 越权响应 | 统一返回 **404**（而不是 403）——不泄露"这条数据存在但你没权限" |
+| 缓存 key | 检索缓存 key 带 `userId`。**这是最容易漏的一处**：只按 query 做 key 的话，A 的检索结果会被缓存后命中返回给 B |
+| 工具调用 | `searchWeakPoints` 限定当前用户的记录范围；`searchKnowledgeBase` 走已隔离的检索服务 |
+
+### 存量数据迁移（一个容易被忽略的坑）
+
+项目原本是单用户无鉴权的，表里已有数据的 `user_id` 全是 `NULL`。直接开启鉴权会造成**很隐蔽的事故：老数据谁都查不到**，表现为「升级后历史记录全没了」。
+
+`DataInitializer` 在启动时处理：
+
+1. 确保演示账号存在（`demo` / `demo123`，可用 `DEMO_USER_ENABLED=false` 关闭）
+2. 把 `user_id IS NULL` 的历史数据归给**最早创建的用户**
+3. 向量库里 `metadata` 缺失 `userId` 的老 chunk 用 PostgreSQL 的 `jsonb || jsonb_build_object(...)` 补齐 —— 否则开了过滤条件后这些 chunk 永远检索不到
+
+### 密钥与安全约定
+
+| 项 | 做法 |
+|---|---|
+| 密码存储 | BCrypt 哈希，从不保存/返回明文 |
+| 登录失败提示 | 用户名不存在与密码错误返回同一句提示，避免账号枚举 |
+| JWT 密钥 | 环境变量 `JWT_SECRET` 注入；**长度 < 32 字节直接启动失败**（快速失败，而不是悄悄用弱密钥） |
+| Token 有效期 | `JWT_TTL`，默认 86400 秒 |
+
+```bash
+# 生成一个足够强的密钥
+export JWT_SECRET="$(openssl rand -base64 48)"
+```
+
+---
+
 ## 3. 数据存储
 
 ### 先搞清楚数据在哪个库（多实例容易搞混）
@@ -695,6 +762,9 @@ interview-agent/
 | 模拟面试（多轮追问 + 打分 + 汇总 + 回放） | ✅ |
 | SSE 流式复盘 + 跨记录会话记忆 | ✅ |
 | Docker Compose 全量编排 | ✅ |
+| Redis 缓存 + 请求幂等（可降级） | ✅ |
+| 异步分析任务（RabbitMQ + 线程池降级 + 幂等） | ✅ |
+| JWT 鉴权 + 多用户数据隔离 | ✅ |
 
 ---
 
@@ -703,7 +773,8 @@ interview-agent/
 - **`position` 是 SQL 关键字**，实体里用反引号转义（`` @Column(name = "`position`") ``，MySQL / H2-MySQL 模式均已验证）。
 - **启动端口不是 8080**：检查是否设置了 `SERVER_PORT` / `SERVER__PORT` 环境变量，Spring Boot 宽松绑定会用它们覆盖 `server.port`（某些 IDE / 沙箱会注入）。启动时显式加 `--server.port=8080` 即可。
 - **stub 模式下 `/chat` 与模拟题返回的是规则化假数据**，仅用于验证链路；真实结论必须配 Key。
-- 单用户、无鉴权，不要直接暴露到公网。
+- **默认开启鉴权**（`SECURITY_ENABLED=true`），业务接口都要 `Authorization: Bearer <token>`；
+  演示账号 `demo/demo123` 启动时自动创建，生产环境请设 `DEMO_USER_ENABLED=false` 并换强密钥。
 - `/api/debug/*` 会暴露连接串（已脱敏密码）与注入给模型的 prompt 原文；对外部署时设 `DEBUG_ENDPOINTS=false` 关闭。
 
 ---

@@ -57,10 +57,11 @@ public class TaskDispatcher {
         this.fallbackCounter = Counter.builder("app.task.dispatched").tag("channel", "mq_fallback").register(registry);
     }
 
-    public AnalysisTask submit(Long recordId) {
+    public AnalysisTask submit(Long recordId, Long userId) {
         AnalysisTask task = new AnalysisTask();
         task.setTaskId(UUID.randomUUID().toString());
         task.setRecordId(recordId);
+        task.setUserId(userId);
         task.setStatus(TaskStatus.PENDING);
         task.setRetryCount(0);
         AnalysisTask saved = taskRepo.save(task);
@@ -70,10 +71,13 @@ public class TaskDispatcher {
         return taskRepo.save(saved);
     }
 
-    /** 失败任务重试：把状态重置为 PENDING 再走一次投递（taskId 保持不变，便于追踪） */
-    public String redispatch(String taskId) {
-        AnalysisTask task = taskRepo.findByTaskId(taskId)
-                .orElseThrow(() -> new IllegalArgumentException("任务不存在: " + taskId));
+    /**
+     * 失败任务重试：把状态重置为 PENDING 再走一次投递（taskId 保持不变，便于追踪）。
+     *
+     * @param userId 归属校验用：别人的任务查不到，避免拿 taskId 撞库重试别人的任务
+     */
+    public String redispatch(String taskId, Long userId) {
+        AnalysisTask task = loadTask(taskId, userId);
         task.setStatus(TaskStatus.PENDING);
         task.setErrorMessage(null);
         task.setFinishedAt(null);
@@ -82,6 +86,11 @@ public class TaskDispatcher {
         task.setDispatchMode(channel);
         taskRepo.save(task);
         return channel;
+    }
+
+    private AnalysisTask loadTask(String taskId, Long userId) {
+        return (userId == null ? taskRepo.findByTaskId(taskId) : taskRepo.findByTaskIdAndUserId(taskId, userId))
+                .orElseThrow(() -> new IllegalArgumentException("任务不存在: " + taskId));
     }
 
     private String dispatch(String taskId) {

@@ -13,7 +13,9 @@ public interface AnalysisTaskRepository extends JpaRepository<AnalysisTask, Long
 
     Optional<AnalysisTask> findByTaskId(String taskId);
 
-    List<AnalysisTask> findByRecordIdOrderByCreatedAtDesc(Long recordId);
+    Optional<AnalysisTask> findByTaskIdAndUserId(String taskId, Long userId);
+
+    List<AnalysisTask> findByUserIdOrderByCreatedAtDesc(Long userId);
 
     /** 积压监控：还没结束的任务数 */
     long countByStatusIn(List<TaskStatus> statuses);

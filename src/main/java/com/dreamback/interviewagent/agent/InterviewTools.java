@@ -2,6 +2,7 @@ package com.dreamback.interviewagent.agent;
 
 import com.dreamback.interviewagent.entity.InterviewQuestion;
 import com.dreamback.interviewagent.repository.InterviewQuestionRepository;
+import com.dreamback.interviewagent.security.UserContext;
 import com.dreamback.interviewagent.service.KnowledgeService;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -27,6 +28,7 @@ public class InterviewTools {
 
     private final KnowledgeService knowledgeService;
     private final InterviewQuestionRepository questionRepository;
+    private final UserContext userContext;
 
     @Tool(description = "检索知识库中与某个技术方向相关的笔记片段，返回最相关的原文，用于判断候选人是否掌握了该知识点")
     public List<String> searchKnowledgeBase(
@@ -49,8 +51,10 @@ public class InterviewTools {
         if (topic == null || topic.isBlank()) {
             return List.of("（请提供要查询的技术方向）");
         }
-        List<InterviewQuestion> qs = questionRepository.searchWeakPoints(
-                topic.trim(), PageRequest.of(0, 5));
+        Long uid = userContext.currentUserId().orElse(null);
+        List<InterviewQuestion> qs = uid == null
+                ? questionRepository.searchWeakPoints(topic.trim(), PageRequest.of(0, 5))
+                : questionRepository.searchWeakPointsByUser(topic.trim(), uid, PageRequest.of(0, 5));
         if (qs.isEmpty()) {
             return List.of("（历史上没有关于「" + topic + "」的弱项记录）");
         }

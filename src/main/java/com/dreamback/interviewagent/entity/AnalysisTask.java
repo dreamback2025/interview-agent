@@ -57,6 +57,10 @@ public class AnalysisTask {
     @Column(name = "dispatch_mode", length = 10)
     private String dispatchMode;
 
+    /** 数据隔离：任务归属，查状态/重试时校验 */
+    @Column(name = "user_id")
+    private Long userId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

@@ -47,6 +47,10 @@ public class InterviewRecord {
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
+    /** 数据隔离：所有查询都必须带这个字段 */
+    @Column(name = "user_id")
+    private Long userId;
+
     @OneToMany(mappedBy = "record", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<InterviewQuestion> questions = new ArrayList<>();
 
