@@ -6,6 +6,7 @@ import com.dreamback.interviewagent.dto.MockFinishResult;
 import com.dreamback.interviewagent.dto.MockSessionDetail;
 import com.dreamback.interviewagent.dto.MockStartRequest;
 import com.dreamback.interviewagent.dto.MockStartResponse;
+import com.dreamback.interviewagent.ratelimit.RateLimit;
 import com.dreamback.interviewagent.service.MockInterviewService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -25,16 +26,19 @@ public class MockController {
     private final MockInterviewService mockInterviewService;
 
     @PostMapping("/start")
+    @RateLimit(qpm = 5)    // 出题烧 token 且单场耗时长，限最严
     public MockStartResponse start(@Valid @RequestBody MockStartRequest req) {
         return mockInterviewService.start(req);
     }
 
     @PostMapping("/answer")
+    @RateLimit(qpm = 20)   // 每题都要调一次，频率高，限放宽
     public MockAnswerResult answer(@Valid @RequestBody MockAnswerRequest req) {
         return mockInterviewService.answer(req);
     }
 
     @PostMapping("/{sessionId}/finish")
+    @RateLimit(qpm = 10)
     public MockFinishResult finish(@PathVariable Long sessionId) {
         return mockInterviewService.finish(sessionId);
     }

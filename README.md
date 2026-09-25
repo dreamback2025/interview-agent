@@ -6,9 +6,9 @@
 
 技术栈：Java 21 · Spring Boot 3.5.16 · Spring AI 1.1.8（DeepSeek，OpenAI 协议）· Ollama bge-m3 + PostgreSQL/pgvector · Redis · RabbitMQ · JPA · Docker Compose · SSE · Micrometer/Prometheus
 
-**核心能力**：面试记录结构化落库 · 弱项分析 + 补强建议 · 知识库语义检索（标题切分 + 1024 维向量 + HNSW 索引）· Function Calling（`@Tool` 由模型自主调用）· 多轮模拟面试与打分 · SSE 流式复盘 · 跨记录会话记忆 · 结果缓存与幂等 · 异步分析任务 · **JWT 鉴权与多用户数据隔离** · 34 项一键自检
+**核心能力**：面试记录结构化落库 · 弱项分析 + 补强建议 · 知识库语义检索（标题切分 + 1024 维向量 + HNSW 索引）· Function Calling（`@Tool` 由模型自主调用）· 多轮模拟面试与打分 · SSE 流式复盘 · 跨记录会话记忆 · 结果缓存与幂等 · 异步分析任务 · **JWT 鉴权与多用户数据隔离** · **按用户限流（滑动窗口 + Redis Lua）** · 34 项一键自检
 
-**工程主线**：用后端手段解决 LLM 应用的规模化问题 —— 慢（缓存 + 异步任务）、贵（结果缓存与幂等去重，避免重复烧 token）、不安全（JWT 鉴权 + 多用户数据隔离）、不可靠（全链路降级）、不可观测（Micrometer 指标）。LLM 与 RAG 只是链路的两端，工程难点在中间这段。
+**工程主线**：用后端手段解决 LLM 应用的规模化问题 —— 慢（缓存 + 异步任务）、贵（限流 + 缓存幂等去重，避免重复烧 token）、不安全（JWT 鉴权 + 多用户数据隔离）、不可靠（全链路降级）、不可观测（Micrometer 指标）。LLM 与 RAG 只是链路的两端，工程难点在中间这段。
 
 > 每一块功能都附**可复现的实测数据**（见下文各节）。
 
@@ -655,6 +655,60 @@ export JWT_SECRET="$(openssl rand -base64 48)"
 
 ---
 
+## 2.13 限流（按用户维度，保护模型配额与成本）
+
+LLM 调用按 token 收费且有速率限制，**限流是成本控制的最后一道闸**。本项目的限流基于 Redis ZSET 滑动窗口 + Lua 原子脚本。
+
+### 设计要点
+
+| 选型 | 选择 | 理由 |
+|---|---|---|
+| 算法 | **滑动窗口**（ZSET + 时间戳） | 固定窗口在边界会突发（59s 内 N 次 + 第 1s N 次 = 2N 次/s），滑动窗口以「当前时刻往前推 60s」为窗口，更精确 |
+| 原子性 | **Lua 脚本** | `ZREMRANGEBYSCORE → ZCARD → ZADD → PEXPIRE` 四步必须原子，否则并发下多个请求会同时通过判断再各自 ZADD，限流失效 |
+| 维度 | `userId + 类.方法` | 同用户调 analyze 和调 mock/start 各算各的；免鉴权模式按 `anonymous` 统一计数 |
+| 降级 | **Redis 不可用时放行** | 与项目「可降级组件不阻断主流程」哲学一致 —— 限流挂了最多多烧几个 token，不能让用户连分析都用不了 |
+
+### 标注的接口与配额
+
+| 接口 | qpm | 理由 |
+|---|---|---|
+| `POST /api/interviews/analyze/{id}` | 10 | 烧 token 的重接口 |
+| `POST /api/interviews/agent-analyze/{id}` | 10 | 工具调用 + 分析，更重 |
+| `GET /api/interviews/{id}/analysis-stream` | 10 | SSE 流式烧 token |
+| `POST /api/mock/start` | 5 | 出题 + 单场耗时长，限最严 |
+| `POST /api/mock/answer` | 20 | 每题都调，频率高，限放宽 |
+| `POST /api/mock/{id}/finish` | 10 | 汇总烧 token |
+
+未标注的接口（录入 / 列表 / 详情 / 知识库 CRUD）不限流 —— 它们不调模型。
+
+### 实测（真实 Redis 容器）
+
+连发 12 次 `analyze`（qpm=10，窗口内已有自检留下的 1 次）：
+
+```
+第 1-9 次:  HTTP 200（通过）
+第 10-12 次: HTTP 429（拒绝，提示「请求过于频繁，每分钟限 10 次」）
+
+指标:
+  app_ratelimit_total{result="allowed"} 17
+  app_ratelimit_total{result="denied"}  3
+  app_ratelimit_total{result="error"}   0
+```
+
+同时验证维度隔离：连发 3 次 `GET /api/interviews`（未标注 @RateLimit）全部 200，不受 analyze 限流影响。
+
+### 关闭与配置
+
+```bash
+# 关闭限流（单机调试）
+RATELIMIT_ENABLED=false ./run.sh
+
+# 调整全局默认 qpm（@RateLimit 注解可按方法覆盖）
+RATELIMIT_QPM=60 ./run.sh
+```
+
+---
+
 ## 3. 数据存储
 
 ### 先搞清楚数据在哪个库（多实例容易搞混）
@@ -773,6 +827,7 @@ interview-agent/
 | Redis 缓存 + 请求幂等（可降级） | ✅ |
 | 异步分析任务（RabbitMQ + 线程池降级 + 幂等） | ✅ |
 | JWT 鉴权 + 多用户数据隔离 | ✅ |
+| 按用户限流（滑动窗口 + Redis Lua） | ✅ |
 
 ---
 

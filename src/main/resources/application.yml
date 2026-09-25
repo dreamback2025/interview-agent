@@ -96,9 +96,8 @@ app:
     mode: ${ASYNC_MODE:mq}
     queue: ${ASYNC_QUEUE:analysis.task.queue}
   ratelimit:
-    # ⚠️ 预留配置：限流尚未实现（代码里没有对应的过滤器/拦截器）。
-    #    默认关闭以免造成「已经限流」的误解；实现后（令牌桶 + Redis Lua）再置为 true。
-    enabled: ${RATELIMIT_ENABLED:false}
+    # 按用户维度限流，保护模型配额与成本（Redis 不可用时自动降级放行）
+    enabled: ${RATELIMIT_ENABLED:true}
     qpm: ${RATELIMIT_QPM:60}
 
 management:
