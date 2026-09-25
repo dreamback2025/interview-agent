@@ -3,58 +3,18 @@ package com.dreamback.interviewagent.service;
 import com.dreamback.interviewagent.dto.AuthResponse;
 import com.dreamback.interviewagent.dto.LoginRequest;
 import com.dreamback.interviewagent.dto.RegisterRequest;
-import com.dreamback.interviewagent.entity.AppUser;
-import com.dreamback.interviewagent.repository.AppUserRepository;
-import com.dreamback.interviewagent.security.JwtService;
-import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
-import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
-@Service
-@RequiredArgsConstructor
-public class AuthService {
+/**
+ * 鉴权服务：注册 / 登录。
+ *
+ * <p>实现见 {@link com.dreamback.interviewagent.service.impl.AuthServiceImpl}。
+ * 密码用 BCrypt 哈希；登录失败对「用户名不存在」与「密码错误」返回同一提示，避免账号枚举。
+ */
+public interface AuthService {
 
-    private final AppUserRepository userRepository;
-    private final PasswordEncoder passwordEncoder;
-    private final JwtService jwtService;
+    /** 注册：成功即返回 token */
+    AuthResponse register(RegisterRequest req);
 
-    @Transactional
-    public AuthResponse register(RegisterRequest req) {
-        if (userRepository.existsByUsername(req.getUsername())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "用户名已存在: " + req.getUsername());
-        }
-        AppUser u = new AppUser();
-        u.setUsername(req.getUsername());
-        u.setPasswordHash(passwordEncoder.encode(req.getPassword()));
-        u.setDisplayName(req.getDisplayName() == null || req.getDisplayName().isBlank()
-                ? req.getUsername() : req.getDisplayName());
-        u.setRole("USER");
-        AppUser saved = userRepository.save(u);
-        return toResponse(saved);
-    }
-
-    @Transactional(readOnly = true)
-    public AuthResponse login(LoginRequest req) {
-        AppUser u = userRepository.findByUsername(req.getUsername())
-                // 用户名不存在与密码错误返回同一个提示，避免账号枚举
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "用户名或密码错误"));
-        if (!passwordEncoder.matches(req.getPassword(), u.getPasswordHash())) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "用户名或密码错误");
-        }
-        return toResponse(u);
-    }
-
-    private AuthResponse toResponse(AppUser u) {
-        AuthResponse r = new AuthResponse();
-        r.setToken(jwtService.issue(u.getId(), u.getUsername(), u.getRole()));
-        r.setExpiresIn(jwtService.ttlSeconds());
-        r.setUserId(u.getId());
-        r.setUsername(u.getUsername());
-        r.setDisplayName(u.getDisplayName());
-        r.setRole(u.getRole());
-        return r;
-    }
+    /** 登录换取 token */
+    AuthResponse login(LoginRequest req);
 }

@@ -3,117 +3,26 @@ package com.dreamback.interviewagent.service;
 import com.dreamback.interviewagent.dto.CreateInterviewRequest;
 import com.dreamback.interviewagent.dto.InterviewDetailResponse;
 import com.dreamback.interviewagent.dto.InterviewSummaryResponse;
-import com.dreamback.interviewagent.entity.InterviewQuestion;
 import com.dreamback.interviewagent.entity.InterviewRecord;
-import com.dreamback.interviewagent.repository.InterviewRecordRepository;
-import com.dreamback.interviewagent.security.UserContext;
-import java.util.Collection;
 import java.util.List;
-import java.util.Optional;
-import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
-@Service
-@RequiredArgsConstructor
-public class InterviewService {
+/**
+ * 面试记录 CRUD 服务。
+ *
+ * <p>实现见 {@link com.dreamback.interviewagent.service.impl.InterviewServiceImpl}。
+ * 拆接口的目的：固定对外契约，便于切实现（如换成基于 ES 的检索式列表）和单测 mock。
+ */
+public interface InterviewService {
 
-    private final InterviewRecordRepository recordRepository;
-    private final UserContext userContext;
+    /** 录入一次面试（含若干题目），返回详情视图 */
+    InterviewDetailResponse create(CreateInterviewRequest req);
 
-    @Transactional
-    public InterviewDetailResponse create(CreateInterviewRequest req) {
-        InterviewRecord record = new InterviewRecord();
-        record.setCompany(req.getCompany());
-        record.setPosition(req.getPosition());
-        record.setInterviewDate(req.getInterviewDate());
-        record.setJd(req.getJd());
-        record.setResult(req.getResult());
-        record.setNotes(req.getNotes());
-        // 免鉴权模式（app.security.enabled=false）下为 null，退化为单用户共享
-        record.setUserId(userContext.currentUserId().orElse(null));
+    /** 当前用户可见的面试记录列表（按时间倒序） */
+    List<InterviewSummaryResponse> list();
 
-        if (req.getQuestions() != null) {
-            for (CreateInterviewRequest.QuestionInput in : req.getQuestions()) {
-                InterviewQuestion q = new InterviewQuestion();
-                q.setQuestion(in.getQuestion());
-                q.setMyAnswer(in.getMyAnswer());
-                q.setFeedback(in.getFeedback());
-                q.setScore(in.getScore());
-                q.setTags(in.getTags());
-                record.addQuestion(q);
-            }
-        }
-        InterviewRecord saved = recordRepository.save(record);
-        return toDetail(saved);
-    }
+    /** 面试详情（含题目）。越权访问返回 404，不泄露存在性 */
+    InterviewDetailResponse get(Long id);
 
-    @Transactional(readOnly = true)
-    public List<InterviewSummaryResponse> list() {
-        Long uid = userContext.currentUserId().orElse(null);
-        var records = uid == null
-                ? findAllLegacy()
-                : recordRepository.findAllByUserIdOrderByCreatedAtDesc(uid);
-        return records.stream().map(this::toSummary).toList();
-    }
-
-    @Transactional(readOnly = true)
-    public InterviewDetailResponse get(Long id) {
-        Long uid = userContext.currentUserId().orElse(null);
-        InterviewRecord record = (uid == null
-                ? findByIdLegacy(id)
-                : recordRepository.findByIdWithQuestionsAndUserId(id, uid))
-                // 越权访问也返回 404：不泄露"这条数据存在但你没权限"
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "面试记录不存在: " + id));
-        return toDetail(record);
-    }
-
-    /** 免鉴权模式：查全部（单用户自用场景） */
-    private Collection<InterviewRecord> findAllLegacy() {
-        return recordRepository.findAll();
-    }
-
-    private Optional<InterviewRecord> findByIdLegacy(Long id) {
-        return recordRepository.findById(id);
-    }
-
-    private InterviewSummaryResponse toSummary(InterviewRecord r) {
-        InterviewSummaryResponse dto = new InterviewSummaryResponse();
-        dto.setId(r.getId());
-        dto.setCompany(r.getCompany());
-        dto.setPosition(r.getPosition());
-        dto.setInterviewDate(r.getInterviewDate());
-        dto.setResult(r.getResult());
-        dto.setQuestionCount(r.getQuestions() == null ? 0 : r.getQuestions().size());
-        dto.setCreatedAt(r.getCreatedAt());
-        return dto;
-    }
-
-    public InterviewDetailResponse toDetail(InterviewRecord r) {
-        InterviewDetailResponse dto = new InterviewDetailResponse();
-        dto.setId(r.getId());
-        dto.setCompany(r.getCompany());
-        dto.setPosition(r.getPosition());
-        dto.setInterviewDate(r.getInterviewDate());
-        dto.setJd(r.getJd());
-        dto.setResult(r.getResult());
-        dto.setNotes(r.getNotes());
-        dto.setCreatedAt(r.getCreatedAt());
-        if (r.getQuestions() != null) {
-            for (InterviewQuestion q : r.getQuestions()) {
-                InterviewDetailResponse.QuestionView v = new InterviewDetailResponse.QuestionView();
-                v.setId(q.getId());
-                v.setQuestion(q.getQuestion());
-                v.setMyAnswer(q.getMyAnswer());
-                v.setFeedback(q.getFeedback());
-                v.setScore(q.getScore());
-                v.setTags(q.getTags());
-                v.setWeakPoints(q.getWeakPoints());
-                dto.getQuestions().add(v);
-            }
-        }
-        return dto;
-    }
+    /** 实体 -> 详情 DTO；导出与其他服务复用 */
+    InterviewDetailResponse toDetail(InterviewRecord r);
 }
