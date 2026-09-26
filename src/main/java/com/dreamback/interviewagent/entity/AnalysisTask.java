@@ -7,6 +7,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -23,7 +24,10 @@ import lombok.Setter;
 @Getter
 @Setter
 @Entity
-@Table(name = "analysis_task")
+@Table(name = "analysis_task", indexes = {
+        @Index(name = "idx_task_user_created", columnList = "user_id, created_at"),
+        @Index(name = "idx_task_status", columnList = "status")
+})
 public class AnalysisTask {
 
     @Id

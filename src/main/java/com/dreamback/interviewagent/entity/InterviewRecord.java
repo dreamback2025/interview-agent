@@ -6,6 +6,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
@@ -19,7 +20,9 @@ import lombok.Setter;
 @Getter
 @Setter
 @Entity
-@Table(name = "interview_record")
+@Table(name = "interview_record", indexes = {
+        @Index(name = "idx_record_user_created", columnList = "user_id, created_at")
+})
 public class InterviewRecord {
 
     @Id

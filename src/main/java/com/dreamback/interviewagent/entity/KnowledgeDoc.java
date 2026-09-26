@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import java.time.LocalDateTime;
@@ -15,7 +16,9 @@ import lombok.Setter;
 @Getter
 @Setter
 @Entity
-@Table(name = "knowledge_doc")
+@Table(name = "knowledge_doc", indexes = {
+        @Index(name = "idx_kdoc_user_created", columnList = "user_id, created_at")
+})
 public class KnowledgeDoc {
 
     @Id

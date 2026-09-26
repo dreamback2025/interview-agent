@@ -6,6 +6,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
@@ -18,7 +19,10 @@ import lombok.Setter;
 @Getter
 @Setter
 @Entity
-@Table(name = "interview_analysis")
+@Table(name = "interview_analysis", indexes = {
+        @Index(name = "idx_analysis_record", columnList = "record_id"),
+        @Index(name = "idx_analysis_user_created", columnList = "user_id, created_at")
+})
 public class InterviewAnalysis {
 
     @Id
