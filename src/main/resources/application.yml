@@ -68,6 +68,17 @@ app:
   llm:
     # 显式强制离线桩模式（未配置 Key 时也会自动降级）
     stub: ${LLM_STUB:false}
+  jd:
+    # JD 提炼用的技术关键词（原先硬编码在 InterviewTools 里的 TECH_KEYWORDS）。
+    # 留空也不会失效 —— 会退化为「知识库标签」这个动态来源；两者都为空时才切分职责短语。
+    keywords: ${JD_KEYWORDS:Java,JVM,GC,并发,多线程,线程池,锁,MySQL,索引,SQL,事务,Redis,缓存,Spring,Spring Boot,MyBatis,Kafka,MQ,消息队列,分布式,微服务,Docker,Kubernetes,Linux,网络,HTTP,TCP,算法,数据结构,设计模式,操作系统,高并发,性能调优,Elasticsearch}
+    # 把「用户自己导入的笔记标签」也作为关键词来源 —— 面 Java 的人得到 Java 系的词，
+    # 面 Go 的人得到 Go 系的词，且补一篇新领域的笔记词库就自动扩展了
+    dynamic-tags: ${JD_DYNAMIC_TAGS:true}
+    # 提炼结果最多返回多少条（防止长 JD 输出爆炸）
+    max-requirements: ${JD_MAX_REQUIREMENTS:12}
+    # 标签不常变，但默认不缓存 —— 否则用户刚补的笔记要等缓存过期才生效（见 JdProperties 注释）
+    keywords-cache-ms: ${JD_KEYWORDS_CACHE_MS:0}
   security:
     # 鉴权总开关：true = JWT 无状态鉴权；false = 全部放行（单用户自用/本地调试）
     enabled: ${SECURITY_ENABLED:true}

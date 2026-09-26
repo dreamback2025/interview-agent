@@ -337,6 +337,32 @@ curl "http://localhost:8080/api/knowledge/search?q=G1%20回收流程&topK=3"
 - **失败自动降级**为不带工具的普通分析，不会出现"点了没反应"
 - 自检端点：`/api/agent/tools/*` 可绕过模型单独验证每个工具
 
+### `getJdRequirements` 的关键词从哪来（可配置 + 动态）
+
+JD 提炼靠的是一份技术关键词表。它原先**硬编码**在 `InterviewTools` 里（34 个词的 `static final List`），
+改一个词就得改代码重新编译。现已重构为两个来源取并集：
+
+| 来源 | 说明 | 怎么改 |
+|---|---|---|
+| **配置** | 通用兜底词 | `app.jd.keywords` / 环境变量 `JD_KEYWORDS`，改配置即可，不用动代码 |
+| **动态** | 用户**自己导入的笔记标签** | 自动 —— 补一篇新领域的笔记，词库就扩展了，零维护 |
+
+动态来源是这里的关键：配置里的词是「通用 Java 后端技术栈」，如果用户面的是 Go / 前端 / 算法岗，
+那批词几乎一个也命中不了；而**用户笔记的标签恰恰就是他自己的技术域**。
+实测：上传一篇 `tags=Go,协程` 的笔记后，JD 写「熟悉 Go 语言与协程调度」即可提炼出 `Go`、`协程`
+（这两个词都不在任何配置里）。
+
+```bash
+JD_KEYWORDS="Go,协程,Kubernetes,gRPC" ./run.sh     # 覆盖默认词表
+JD_DYNAMIC_TAGS=false ./run.sh                     # 只认配置，不用笔记标签
+JD_MAX_REQUIREMENTS=8 ./run.sh                     # 提炼结果最多 8 条
+```
+
+> **顺带修掉的两个老问题**（重构时发现的）：
+> ① 原来用 `contains` 匹配，导致 **"Java" 会命中 "JavaScript"**、"GC" 命中 "GCC" ——
+> 现在 ASCII 词要求**词边界**，中文词仍走包含匹配；
+> ② 原来在每个关键词的循环里都对整个 JD 做一次 `toLowerCase()`，N 个词就是 N 次全量拷贝 —— 现在只转一次。
+
 已用 `--logging.level.org.springframework.ai=DEBUG` 确认模型真的发起了调用：
 
 ```
