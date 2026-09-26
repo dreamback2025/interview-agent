@@ -20,7 +20,7 @@ import lombok.Setter;
 @Setter
 @Entity
 @Table(name = "mock_turn", indexes = {
-        @Index(name = "idx_mturn_session", columnList = "session_id")
+        @Index(name = "idx_mturn_session", columnList = "mock_session_id")
 })
 public class MockTurn {
 

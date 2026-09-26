@@ -1,5 +1,5 @@
 {
-  "_comment": "纯向量检索基线（app.rag.hybrid.enabled=false），同语料同查询同 embedding。用于评测报告里的对照表 —— 想刷新基线就关掉 hybrid 重跑 run-eval.py，把新数字填到这里。",
+  "_comment": "纯向量检索基线（app.rag.hybrid.enabled=false），同语料同查询同 embedding。用于评测报告里的对照表 —— 想刷新基线就关掉 hybrid 重跑 run-eval.py，把新数字填到这里。levelMeans 是四档负样本的 Top1 分数均值。",
   "mode": "vector",
   "total": 40,
   "hit1": 0.700,
@@ -9,5 +9,11 @@
   "hit5": 0.950,
   "hit5Count": 38,
   "mrr": 0.827,
-  "missTop1": 12
+  "missTop1": 12,
+  "levelMeans": {
+    "L1": 0.532,
+    "L2": 0.563,
+    "L3": 0.557,
+    "L4": 0.723
+  }
 }

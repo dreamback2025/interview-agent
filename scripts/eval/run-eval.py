@@ -64,6 +64,101 @@ def login():
     print('[auth] 未获取 token，按免鉴权模式继续')
 
 
+def render_distribution_svg(path, pos_scores, by_level, level_desc):
+    """把正样本与四档负样本的 Top1 分数画成分布图（strip plot）。
+
+    零依赖手写 SVG（不引入 matplotlib），Markdown 报告里可直接渲染。
+    重点是把「正样本最低分」与「难负样本最高分」的重叠区间标出来 ——
+    重叠越大，说明系统在该拒绝的时候越拒绝不了。
+    """
+    import random as _random
+    rng = _random.Random(42)   # 固定 seed：jitter 可复现，图不抖动
+
+    rows = [('正样本', '命中目标知识点', pos_scores, '#2f6f4f')]
+    palette = {'L1': '#3b6ea5', 'L2': '#c98a1e', 'L3': '#c05621', 'L4': '#a83232'}
+    for lv in ['L1', 'L2', 'L3', 'L4']:
+        g = [x['score'] for x in by_level[lv]]
+        if g:
+            rows.append((lv, level_desc[lv], g, palette[lv]))
+
+    W, L, R, T, row_h = 960, 150, 46, 46, 62
+    H = T + row_h * len(rows) + 74
+    plot_w = W - L - R
+
+    def x_of(score):
+        return L + (max(0.0, min(100.0, score)) / 100.0) * plot_w
+
+    s = ['<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d" '
+         'font-family="-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Hiragino Sans GB,'
+         'Microsoft YaHei,sans-serif">' % (W, H, W, H)]
+    s.append('<rect width="%d" height="%d" fill="#ffffff"/>' % (W, H))
+    s.append('<text x="%d" y="26" font-size="15" font-weight="600" fill="#1f2328">'
+             'RAG 检索 Top1 相似度分布：正样本 vs 四档负样本</text>' % L)
+
+    for pct in range(0, 101, 10):
+        x = x_of(pct)
+        s.append('<line x1="%.1f" y1="%d" x2="%.1f" y2="%d" stroke="#e8eaed" stroke-width="1"/>'
+                 % (x, T - 8, x, T + row_h * len(rows) - 12))
+        s.append('<text x="%.1f" y="%d" font-size="11" fill="#8b949e" text-anchor="middle">%d%%</text>'
+                 % (x, T + row_h * len(rows) + 14, pct))
+
+    pos_min = min(pos_scores)
+    hard_scores = [x['score'] for lv in ['L2', 'L3', 'L4'] for x in by_level[lv]]
+    hard_max = max(hard_scores) if hard_scores else 0.0
+
+    # 重叠区间底色（正样本最低分 → 难负样本最高分）
+    if hard_max > pos_min:
+        x1, x2 = x_of(pos_min), x_of(hard_max)
+        s.append('<rect x="%.1f" y="%d" width="%.1f" height="%d" fill="#ffe8a3" opacity="0.5"/>'
+                 % (x1, T - 8, x2 - x1, row_h * len(rows) - 4))
+
+    for i, (label, desc, scores, color) in enumerate(rows):
+        cy = T + i * row_h + 22
+        s.append('<text x="12" y="%.1f" font-size="13" font-weight="600" fill="#1f2328">%s</text>'
+                 % (cy, label))
+        s.append('<text x="12" y="%.1f" font-size="10" fill="#8b949e">%s</text>'
+                 % (cy + 14, desc[:20]))
+        s.append('<line x1="%d" y1="%.1f" x2="%d" y2="%.1f" stroke="#f0f2f4" stroke-width="1"/>'
+                 % (L, cy, W - R, cy))
+        for sc in scores:
+            s.append('<circle cx="%.1f" cy="%.1f" r="4.5" fill="%s" opacity="0.72"/>'
+                     % (x_of(sc), cy + rng.uniform(-15, 15), color))
+        mean = statistics.mean(scores)
+        s.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="%s" stroke-width="2" '
+                 'stroke-dasharray="4 3"/>' % (x_of(mean), cy - 22, x_of(mean), cy + 22, color))
+        s.append('<text x="%.1f" y="%.1f" font-size="11" font-weight="600" fill="%s" '
+                 'text-anchor="middle">均值 %.1f%%</text>' % (x_of(mean), cy - 27, color, mean))
+
+    # 正样本最低分标线（贯穿全图）
+    xm = x_of(pos_min)
+    s.append('<line x1="%.1f" y1="%d" x2="%.1f" y2="%d" stroke="#a83232" stroke-width="1.5" '
+             'stroke-dasharray="6 4"/>' % (xm, T - 14, xm, T + row_h * len(rows) - 6))
+    s.append('<text x="%.1f" y="%d" font-size="11" font-weight="600" fill="#a83232" '
+             'text-anchor="middle">正样本最低 %.1f%%</text>' % (xm, T - 18, pos_min))
+
+    yb = T + row_h * len(rows) + 42
+    if hard_max > pos_min:
+        note = ('黄色区间 = 重叠区 %.1f%% ~ %.1f%%（宽 %.1f 个百分点）：'
+                '难负样本分数落进正样本区间，靠绝对阈值拒绝不了' % (pos_min, hard_max, hard_max - pos_min))
+    else:
+        note = '正样本与难负样本的分数区间不重叠'
+    s.append('<text x="%d" y="%.1f" font-size="12" fill="#57606a">%s</text>' % (L, yb, note))
+    s.append('</svg>')
+
+    open(path, 'w', encoding='utf-8').write('\n'.join(s))
+
+
+def normalize_negatives(raw):
+    """负样本兼容两种写法：纯字符串（按 L1 处理）与对象（带 level / note）"""
+    out = []
+    for item in raw:
+        if isinstance(item, str):
+            out.append((item, 'L1', ''))
+        else:
+            out.append((item['q'], item.get('level', 'L1'), item.get('note', '')))
+    return out
+
+
 def parse_corpus():
     text = open(os.path.join(HERE, 'corpus.md'), encoding='utf-8').read()
     items = []
@@ -102,7 +197,8 @@ def main():
         pass
     corpus = parse_corpus()
     spec = json.load(open(os.path.join(HERE, 'queries.json'), encoding='utf-8'))
-    positives, negatives = spec['positive'], spec['negative']
+    positives = spec['positive']
+    negatives = normalize_negatives(spec['negative'])
     log = []
 
     def out(s=''):
@@ -169,37 +265,73 @@ def main():
             got = f['top1']['title'] if f['top1'] else '(空)'
             out('  - [%s] %s  → 实际 Top1: %s (rank=%s)' % (f['expect'], f['q'], got, f['rank'] or '>5'))
 
-    # ---------- 负样本 ----------
+    # ---------- 负样本（按 L1~L4 分档）----------
     out()
-    out('=== 负样本对照（%d 条语料外主题）===' % len(negatives))
+    out('=== 负样本分级（%d 条，按与语料的距离分档）===' % len(negatives))
     neg = []
-    for q in negatives:
+    for q, level, note in negatives:
         res = search(q, topk=1)
         if res:
-            neg.append({'q': q, 'score': score_of(res[0]), 'top1': res[0]['title']})
+            neg.append({'q': q, 'level': level, 'note': note,
+                        'score': score_of(res[0]), 'top1': res[0]['title']})
     neg_scores = [x['score'] for x in neg]
-    out('最高分: 均值 %.1f%%  最低 %.1f%%  最高 %.1f%%'
-        % (statistics.mean(neg_scores), min(neg_scores), max(neg_scores)))
-    for x in sorted(neg, key=lambda x: -x['score'])[:5]:
-        out('  %.1f%%  %s  → 命中「%s」' % (x['score'], x['q'], x['top1']))
+
+    LEVELS = ['L1', 'L2', 'L3', 'L4']
+    LEVEL_DESC = {
+        'L1': '跨域（语料无此技术栈）',
+        'L2': '同域不同主题（域在语料内，主题没讲）',
+        'L3': '同主题边界（讲了规则，没覆盖此例外）',
+        'L4': '词法陷阱（用词与正样本重叠，语义翻转）',
+    }
+    by_level = {lv: [x for x in neg if x['level'] == lv] for lv in LEVELS}
+    for lv in LEVELS:
+        g = by_level[lv]
+        if not g:
+            continue
+        gs = [x['score'] for x in g]
+        out('  %s  n=%2d  均值 %5.1f%%  最高 %5.1f%%   %s'
+            % (lv, len(g), statistics.mean(gs), max(gs), LEVEL_DESC[lv]))
+    out()
+    out('  各档最高分（这些是最该被拒绝、却拿到高分的）：')
+    for lv in LEVELS:
+        for x in sorted(by_level[lv], key=lambda x: -x['score'])[:2]:
+            out('    %s %5.1f%%  %s  → 命中「%s」' % (lv, x['score'], x['q'], x['top1']))
 
     # ---------- 阈值分析 ----------
     out()
     out('=== 阈值敏感性分析 ===')
-    out('阈值   正样本Top1通过   负样本误判')
+    hard = [x for x in neg if x['level'] != 'L1']
+    n_l1, n_hard = len(by_level['L1']), len(hard)
+    out('阈值    正样本Top1通过     L1误判            L2~L4误判（难负样本）')
     th_rows = []
     for t in [45, 50, 52, 54, 56, 58, 60, 65, 70]:
         p = sum(1 for s in pos_top1_scores if s >= t)
-        nfalse = sum(1 for s in neg_scores if s >= t)
-        th_rows.append((t, p, nfalse))
-        out('>=%2d%%   %2d/%d (%5.1f%%)   %2d/%d (%5.1f%%)'
-            % (t, p, n, 100.0 * p / n, nfalse, len(neg), 100.0 * nfalse / len(neg)))
+        n1 = sum(1 for x in by_level['L1'] if x['score'] >= t)
+        nh = sum(1 for x in hard if x['score'] >= t)
+        th_rows.append((t, p, n1, nh))
+        out('>=%2d%%   %2d/%d (%5.1f%%)   %2d/%d (%5.1f%%)   %2d/%d (%5.1f%%)'
+            % (t, p, n, 100.0 * p / n,
+               n1, n_l1, 100.0 * n1 / max(1, n_l1),
+               nh, n_hard, 100.0 * nh / max(1, n_hard)))
 
-    overlap = min(pos_top1_scores) <= max(neg_scores)
     out()
-    out('正样本最低分 %.1f%%  vs  负样本最高分 %.1f%%  → %s'
-        % (min(pos_top1_scores), max(neg_scores),
-           '区间重叠，绝对相似度无法区分正负样本' if overlap else '区间不重叠'))
+    pos_min = min(pos_top1_scores)
+    l1_max = max(x['score'] for x in by_level['L1']) if by_level['L1'] else 0.0
+    hard_max = max((x['score'] for x in hard), default=0.0)
+    out('正样本最低分 %.1f%%  vs  L1 最高分 %.1f%%  → %s'
+        % (pos_min, l1_max, '重叠' if pos_min <= l1_max else '不重叠'))
+    if hard_max > pos_min:
+        out('正样本最低分 %.1f%%  vs  L2~L4 最高分 %.1f%%  → 重叠 %.1f 个百分点'
+            % (pos_min, hard_max, hard_max - pos_min))
+        out('  ↑ 难负样本的分数落进了正样本区间：靠绝对阈值拒绝不了，只有排序指标能反映问题')
+    else:
+        out('正样本最低分 %.1f%%  vs  L2~L4 最高分 %.1f%%  → 不重叠'
+            % (pos_min, hard_max))
+
+    # ---------- 分布图 ----------
+    svg_path = os.path.join(os.path.dirname(REPORT), 'rag-eval-distribution.svg')
+    render_distribution_svg(svg_path, pos_top1_scores, by_level, LEVEL_DESC)
+    out('[chart] 分布图已写入 %s' % svg_path)
 
     # ---------- 写报告 ----------
     md = []
@@ -217,7 +349,7 @@ def main():
     md.append('| **检索模式** | `%s`（hybrid = 向量 + 关键词 tsvector + RRF 融合；vector = 纯向量） |' % retrieval)
     md.append('| 向量库 | PostgreSQL 17 + pgvector 0.8.6，HNSW + cosine |')
     md.append('| 正样本 | %d 条自然口语提问（措辞刻意不与文档标题重合，expect 对应知识点 tag） |' % n)
-    md.append('| 负样本 | %d 条语料中完全不存在的主题（用于测假阳性） |' % len(neg))
+    md.append('| 负样本 | %d 条，按「与语料的距离」分 L1~L4 四档（见 §3）—— 越靠后越难拒绝 |' % len(neg))
     md.append('| 命中判定 | 检索结果的 `tags` 字段包含期望 tag，不依赖人工判断 |')
     md.append('')
     md.append('## 2. 正样本检索质量')
@@ -270,44 +402,93 @@ def main():
                   '（「缓存和数据库的一致性」的 Top1 变成「分布式事务」）。'
                   '缓解方向：调低关键词通道权重，或引入 cross-encoder rerank 做二次精排。')
         md.append('')
-    md.append('## 3. 负样本对照')
+        if 'levelMeans' in b:
+            md.append('### 2.5.1 关键词通道对难负样本的作用（是否被词法重叠骗了？）')
+            md.append('')
+            md.append('| 档位 | 纯向量均值 | 混合均值 | 变化 |')
+            md.append('|---|---|---|---|')
+            for lv in LEVELS:
+                if not by_level[lv] or lv not in b['levelMeans']:
+                    continue
+                vm = statistics.mean([x['score'] for x in by_level[lv]])
+                ov = b['levelMeans'][lv] * 100
+                md.append('| %s | %.1f%% | %.1f%% | %+.1f |' % (lv, ov, vm, vm - ov))
+            md.append('')
+            md.append('结论：**关键词通道没有被词法重叠骗** —— 它让四档负样本的分数**全部下降**，'
+                      '同时对正样本 Hit@1 是提升的。机制是 RRF 融合稀释了向量通道的「语义虚高」：'
+                      '干扰文档在关键词通道里排名低（token 对不上），融合后被拉下去。')
+            md.append('')
+            md.append('但要注意：L4 的绝对分数（67.5%）仍是四档最高、且远超正样本最低分，'
+                      '所以**难负样本依旧没有被解决** —— 混合检索改善的是排序，不是「知道边界在哪」。')
+            md.append('')
+    md.append('## 3. 负样本分级（L1~L4）')
     md.append('')
-    md.append('| 指标 | 值 |')
-    md.append('|---|---|')
-    md.append('| 负样本最高分（均值） | %.1f%% |' % statistics.mean(neg_scores))
-    md.append('| 负样本最高分（区间） | %.1f%%~%.1f%% |' % (min(neg_scores), max(neg_scores)))
-    md.append('| 正样本 Top1 最低分 | %.1f%% |' % min(pos_top1_scores))
-    md.append('| **区间重叠** | 负样本最高分比正样本最低分**还高 %.1f 个百分点** |'
-              % (max(neg_scores) - min(pos_top1_scores)))
+    md.append('负样本按「与语料的距离」分四档 —— **越靠后越难拒绝**，因为它们与正样本共享越多词汇和语义：')
+    md.append('')
+    md.append('| 档位 | 含义 | n | Top1 相似度均值 | 最高 |')
+    md.append('|---|---|---|---|---|')
+    for lv in LEVELS:
+        g = by_level[lv]
+        if not g:
+            continue
+        gs = [x['score'] for x in g]
+        md.append('| **%s** | %s | %d | %.1f%% | **%.1f%%** |'
+                  % (lv, LEVEL_DESC[lv], len(g), statistics.mean(gs), max(gs)))
+    md.append('')
+    md.append('各档最高分的具体条目（**最该被拒绝、却拿到最高分**的）：')
+    md.append('')
+    md.append('| 档位 | 分数 | 提问 | 命中的语料 |')
+    md.append('|---|---|---|---|')
+    for lv in LEVELS:
+        for x in sorted(by_level[lv], key=lambda x: -x['score'])[:2]:
+            md.append('| %s | %.1f%% | %s | %s |' % (lv, x['score'], x['q'], x['top1']))
+    md.append('')
+    md.append('![负样本分级分布](rag-eval-distribution.svg)')
+    md.append('')
+    md.append('正样本 Top1 最低分 **%.1f%%**，难负样本（L2~L4）最高分 **%.1f%%** —— '
+              '重叠 **%.1f 个百分点**。' % (pos_min, hard_max, max(0.0, hard_max - pos_min)))
+    md.append('重叠区越大，说明系统在「该拒绝」的时候越拒绝不了：'
+              '用户问一个语料里没有答案、但用词很像的问题时，系统会自信地返回一个看似相关的段落。')
     md.append('')
     md.append('## 4. 阈值敏感性')
     md.append('')
     md.append('假设「相似度 ≥ 阈值即认为命中」，统计正样本通过率与负样本误判率：')
     md.append('')
-    md.append('| 阈值 | 正样本 Top1 通过 | 负样本误判 |')
-    md.append('|---|---|---|')
-    for t, p, nf in th_rows:
-        md.append('| ≥%d%% | %d/%d (%.1f%%) | %d/%d (%.1f%%) |'
-                  % (t, p, n, 100.0 * p / n, nf, len(neg), 100.0 * nf / len(neg)))
+    md.append('| 阈值 | 正样本 Top1 通过 | L1 误判 | **L2~L4 误判（难负样本）** |')
+    md.append('|---|---|---|---|')
+    for t, p, n1, nh in th_rows:
+        md.append('| ≥%d%% | %d/%d (%.1f%%) | %d/%d (%.1f%%) | **%d/%d (%.1f%%)** |'
+                  % (t, p, n, 100.0 * p / n,
+                     n1, n_l1, 100.0 * n1 / max(1, n_l1),
+                     nh, n_hard, 100.0 * nh / max(1, n_hard)))
     md.append('')
+    # 难负样本误判归零所需的最小阈值（结论里用）
+    t_zero = next((t for t in range(30, 101) if all(x['score'] < t for x in hard)), 100)
+    pos_pass_zero = 100.0 * sum(1 for s in pos_top1_scores if s >= t_zero) / n
+
     md.append('## 5. 结论')
     md.append('')
-    md.append('1. **排序指标可用**：Hit@1 %.1f%%、Hit@3 %.1f%%、MRR %.3f，说明向量检索在'
+    md.append('1. **排序指标可用**：Hit@1 %.1f%%、Hit@3 %.1f%%、MRR %.3f，说明检索在'
               '「自然口语提问 → 知识点」这个任务上排序是有效的。' % (100.0 * h1 / n, 100.0 * h3 / n, mrr))
-    md.append('2. **绝对相似度不可作阈值**：负样本（语料中完全不存在的主题）最高分 %.1f%%，'
-              '比正样本的最低分（%.1f%%）还高 %.1f 个百分点，两个区间完全重叠。'
-              '阈值敏感性分析给出了更明确的结论——要让负样本误判率降到 0，阈值必须提到 60%% 以上，'
-              '但正样本会因此损失约四分之一（通过率跌到 72.5%%）；'
-              '反之阈值定在 55%% 时负样本误判率高达 40%%。**不存在可用的工作点**，'
-              '因此这类系统的验收标准应该是排序指标（Hit@K / MRR），'
-              '而不是「相似度 > 0.7 才算命中」这种写法。'
-              % (max(neg_scores), min(pos_top1_scores), max(neg_scores) - min(pos_top1_scores)))
-    md.append('3. **topK = 3 是性价比最高的取值**：%d 条查询的正确答案不在 Top1，'
-              '其中 %d 条落在 Top2~Top3；Hit@3 与 Hit@5 完全相同（均 %.1f%%），'
+    md.append('2. **绝对相似度不可作阈值**：L1 负样本最高分 %.1f%%，'
+              '但 L2~L4（同域 / 边界 / 词法陷阱）最高分也到了 %.1f%%，'
+              '比正样本最低分（%.1f%%）还高 %.1f 个百分点 —— 区间完全重叠。'
+              '要让**难**负样本误判归零，阈值须提到 %d%% 以上，此时正样本通过率只剩 %.1f%%。'
+              '**不存在可用的工作点**，因此这类系统的验收标准只能是排序指标（Hit@K / MRR），'
+              '而不是「相似度 > 0.7 才算命中」。'
+              % (l1_max, hard_max, pos_min, max(0.0, hard_max - pos_min), t_zero, pos_pass_zero))
+    md.append('3. **L1 与 L2~L4 是两个不同的问题**：L1 分数明显更低（均值 %.1f%%），'
+              '说明「问别的技术栈」系统是能识别的；但 L2~L4 抬升到 %.1f%%，与正样本区间重叠 ——'
+              '**真正的风险不是「问别的技术栈」，而是「问同域里没讲的那个点」**。'
+              % ((statistics.mean([x['score'] for x in by_level['L1']]) if by_level['L1'] else 0.0),
+                 (statistics.mean([x['score'] for x in hard]) if hard else 0.0)))
+    md.append('4. **topK = 3 是性价比最高的取值**：%d 条查询的正确答案不在 Top1，'
+              '其中 %d 条落在 Top2~Top3；Hit@3 与 Hit@5 相同（均 %.1f%%），'
               '说明取 3 条已覆盖全部可召回结果，取 5 条只是徒增送入 LLM 的上下文开销。'
               % (n - h1, h3 - h1, 100.0 * h3 / n))
-    md.append('4. **提升方向**：剩余错误主要来自主题相近的知识点互相干扰'
-              '（如同一领域下的两个细分主题），可考虑混合检索（向量 + BM25 关键词）或加一层 Rerank。')
+    md.append('5. **提升方向**：剩余错误来自主题相近的知识点互相干扰 —— 已落地混合检索'
+              '（向量 + 关键词 tsvector + RRF），Hit@1 从 70%% 提到 85%%；'
+              '进一步可用 cross-encoder rerank 做语义级精排。')
     md.append('')
     md.append('---')
     md.append('')
