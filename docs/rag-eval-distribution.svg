@@ -23,14 +23,14 @@
 <text x="837.6" y="370" font-size="11" fill="#8b949e" text-anchor="middle">90%</text>
 <line x1="914.0" y1="38" x2="914.0" y2="344" stroke="#e8eaed" stroke-width="1"/>
 <text x="914.0" y="370" font-size="11" fill="#8b949e" text-anchor="middle">100%</text>
-<rect x="443.0" y="38" width="319.0" height="306" fill="#ffe8a3" opacity="0.5"/>
+<rect x="456.1" y="38" width="305.9" height="306" fill="#ffe8a3" opacity="0.5"/>
 <text x="12" y="68.0" font-size="13" font-weight="600" fill="#1f2328">正样本</text>
 <text x="12" y="82.0" font-size="10" fill="#8b949e">命中目标知识点</text>
 <line x1="150" y1="68.0" x2="914" y2="68.0" stroke="#f0f2f4" stroke-width="1"/>
 <circle cx="513.7" cy="72.2" r="4.5" fill="#2f6f4f" opacity="0.72"/>
 <circle cx="667.5" cy="53.8" r="4.5" fill="#2f6f4f" opacity="0.72"/>
 <circle cx="642.4" cy="61.3" r="4.5" fill="#2f6f4f" opacity="0.72"/>
-<circle cx="443.0" cy="59.7" r="4.5" fill="#2f6f4f" opacity="0.72"/>
+<circle cx="456.1" cy="59.7" r="4.5" fill="#2f6f4f" opacity="0.72"/>
 <circle cx="701.9" cy="75.1" r="4.5" fill="#2f6f4f" opacity="0.72"/>
 <circle cx="578.2" cy="73.3" r="4.5" fill="#2f6f4f" opacity="0.72"/>
 <circle cx="625.2" cy="79.8" r="4.5" fill="#2f6f4f" opacity="0.72"/>
@@ -67,8 +67,8 @@
 <circle cx="638.0" cy="71.6" r="4.5" fill="#2f6f4f" opacity="0.72"/>
 <circle cx="566.2" cy="78.9" r="4.5" fill="#2f6f4f" opacity="0.72"/>
 <circle cx="582.4" cy="70.3" r="4.5" fill="#2f6f4f" opacity="0.72"/>
-<line x1="621.7" y1="46.0" x2="621.7" y2="90.0" stroke="#2f6f4f" stroke-width="2" stroke-dasharray="4 3"/>
-<text x="621.7" y="41.0" font-size="11" font-weight="600" fill="#2f6f4f" text-anchor="middle">均值 61.7%</text>
+<line x1="622.0" y1="46.0" x2="622.0" y2="90.0" stroke="#2f6f4f" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="622.0" y="41.0" font-size="11" font-weight="600" fill="#2f6f4f" text-anchor="middle">均值 61.8%</text>
 <text x="12" y="130.0" font-size="13" font-weight="600" fill="#1f2328">L1</text>
 <text x="12" y="144.0" font-size="10" fill="#8b949e">跨域（语料无此技术栈）</text>
 <line x1="150" y1="130.0" x2="914" y2="130.0" stroke="#f0f2f4" stroke-width="1"/>
@@ -76,7 +76,7 @@
 <circle cx="553.8" cy="116.4" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="604.7" cy="121.8" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="519.8" cy="123.7" r="4.5" fill="#3b6ea5" opacity="0.72"/>
-<circle cx="507.3" cy="117.4" r="4.5" fill="#3b6ea5" opacity="0.72"/>
+<circle cx="533.4" cy="117.4" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="509.9" cy="122.0" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="537.8" cy="118.0" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="489.7" cy="123.3" r="4.5" fill="#3b6ea5" opacity="0.72"/>
@@ -85,45 +85,45 @@
 <circle cx="608.0" cy="126.1" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="550.0" cy="121.3" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="578.6" cy="123.0" r="4.5" fill="#3b6ea5" opacity="0.72"/>
-<circle cx="553.0" cy="143.1" r="4.5" fill="#3b6ea5" opacity="0.72"/>
+<circle cx="527.4" cy="143.1" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="479.8" cy="134.4" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="599.5" cy="133.3" r="4.5" fill="#3b6ea5" opacity="0.72"/>
-<circle cx="524.9" cy="120.1" r="4.5" fill="#3b6ea5" opacity="0.72"/>
+<circle cx="517.6" cy="120.1" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="546.4" cy="136.9" r="4.5" fill="#3b6ea5" opacity="0.72"/>
 <circle cx="529.3" cy="119.9" r="4.5" fill="#3b6ea5" opacity="0.72"/>
-<line x1="548.6" y1="108.0" x2="548.6" y2="152.0" stroke="#3b6ea5" stroke-width="2" stroke-dasharray="4 3"/>
-<text x="548.6" y="103.0" font-size="11" font-weight="600" fill="#3b6ea5" text-anchor="middle">均值 52.2%</text>
+<line x1="548.2" y1="108.0" x2="548.2" y2="152.0" stroke="#3b6ea5" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="548.2" y="103.0" font-size="11" font-weight="600" fill="#3b6ea5" text-anchor="middle">均值 52.1%</text>
 <text x="12" y="192.0" font-size="13" font-weight="600" fill="#1f2328">L2</text>
 <text x="12" y="206.0" font-size="10" fill="#8b949e">同域不同主题（域在语料内，主题没讲）</text>
 <line x1="150" y1="192.0" x2="914" y2="192.0" stroke="#f0f2f4" stroke-width="1"/>
 <circle cx="554.8" cy="188.4" r="4.5" fill="#c98a1e" opacity="0.72"/>
-<circle cx="542.2" cy="206.7" r="4.5" fill="#c98a1e" opacity="0.72"/>
+<circle cx="552.7" cy="206.7" r="4.5" fill="#c98a1e" opacity="0.72"/>
 <circle cx="574.6" cy="196.2" r="4.5" fill="#c98a1e" opacity="0.72"/>
 <circle cx="540.0" cy="193.7" r="4.5" fill="#c98a1e" opacity="0.72"/>
-<circle cx="592.0" cy="197.5" r="4.5" fill="#c98a1e" opacity="0.72"/>
+<circle cx="601.6" cy="197.5" r="4.5" fill="#c98a1e" opacity="0.72"/>
 <circle cx="475.4" cy="202.3" r="4.5" fill="#c98a1e" opacity="0.72"/>
 <circle cx="591.4" cy="200.3" r="4.5" fill="#c98a1e" opacity="0.72"/>
-<line x1="552.9" y1="170.0" x2="552.9" y2="214.0" stroke="#c98a1e" stroke-width="2" stroke-dasharray="4 3"/>
-<text x="552.9" y="165.0" font-size="11" font-weight="600" fill="#c98a1e" text-anchor="middle">均值 52.7%</text>
+<line x1="555.8" y1="170.0" x2="555.8" y2="214.0" stroke="#c98a1e" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="555.8" y="165.0" font-size="11" font-weight="600" fill="#c98a1e" text-anchor="middle">均值 53.1%</text>
 <text x="12" y="254.0" font-size="13" font-weight="600" fill="#1f2328">L3</text>
 <text x="12" y="268.0" font-size="10" fill="#8b949e">同主题边界（讲了规则，没覆盖此例外）</text>
 <line x1="150" y1="254.0" x2="914" y2="254.0" stroke="#f0f2f4" stroke-width="1"/>
-<circle cx="572.0" cy="245.9" r="4.5" fill="#c05621" opacity="0.72"/>
+<circle cx="571.9" cy="245.9" r="4.5" fill="#c05621" opacity="0.72"/>
 <circle cx="633.0" cy="240.0" r="4.5" fill="#c05621" opacity="0.72"/>
-<circle cx="489.2" cy="248.5" r="4.5" fill="#c05621" opacity="0.72"/>
-<circle cx="575.5" cy="247.0" r="4.5" fill="#c05621" opacity="0.72"/>
+<circle cx="502.1" cy="248.5" r="4.5" fill="#c05621" opacity="0.72"/>
+<circle cx="579.5" cy="247.0" r="4.5" fill="#c05621" opacity="0.72"/>
 <circle cx="592.8" cy="245.3" r="4.5" fill="#c05621" opacity="0.72"/>
-<line x1="572.5" y1="232.0" x2="572.5" y2="276.0" stroke="#c05621" stroke-width="2" stroke-dasharray="4 3"/>
-<text x="572.5" y="227.0" font-size="11" font-weight="600" fill="#c05621" text-anchor="middle">均值 55.3%</text>
+<line x1="575.9" y1="232.0" x2="575.9" y2="276.0" stroke="#c05621" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="575.9" y="227.0" font-size="11" font-weight="600" fill="#c05621" text-anchor="middle">均值 55.7%</text>
 <text x="12" y="316.0" font-size="13" font-weight="600" fill="#1f2328">L4</text>
 <text x="12" y="330.0" font-size="10" fill="#8b949e">词法陷阱（用词与正样本重叠，语义翻转）</text>
 <line x1="150" y1="316.0" x2="914" y2="316.0" stroke="#f0f2f4" stroke-width="1"/>
 <circle cx="633.2" cy="329.3" r="4.5" fill="#a83232" opacity="0.72"/>
 <circle cx="761.9" cy="327.3" r="4.5" fill="#a83232" opacity="0.72"/>
-<circle cx="602.8" cy="310.4" r="4.5" fill="#a83232" opacity="0.72"/>
-<line x1="666.0" y1="294.0" x2="666.0" y2="338.0" stroke="#a83232" stroke-width="2" stroke-dasharray="4 3"/>
-<text x="666.0" y="289.0" font-size="11" font-weight="600" fill="#a83232" text-anchor="middle">均值 67.5%</text>
-<line x1="443.0" y1="32" x2="443.0" y2="350" stroke="#a83232" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="443.0" y="28" font-size="11" font-weight="600" fill="#a83232" text-anchor="middle">正样本最低 38.3%</text>
-<text x="150" y="398.0" font-size="12" fill="#57606a">黄色区间 = 重叠区 38.3% ~ 80.1%（宽 41.8 个百分点）：难负样本分数落进正样本区间，靠绝对阈值拒绝不了</text>
+<circle cx="711.0" cy="310.4" r="4.5" fill="#a83232" opacity="0.72"/>
+<line x1="702.0" y1="294.0" x2="702.0" y2="338.0" stroke="#a83232" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="702.0" y="289.0" font-size="11" font-weight="600" fill="#a83232" text-anchor="middle">均值 72.3%</text>
+<line x1="456.1" y1="32" x2="456.1" y2="350" stroke="#a83232" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="456.1" y="28" font-size="11" font-weight="600" fill="#a83232" text-anchor="middle">正样本最低 40.1%</text>
+<text x="150" y="398.0" font-size="12" fill="#57606a">黄色区间 = 重叠区 40.1% ~ 80.1%（宽 40.0 个百分点）：难负样本分数落进正样本区间，靠绝对阈值拒绝不了</text>
 </svg>
