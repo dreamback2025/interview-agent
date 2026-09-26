@@ -1,7 +1,7 @@
 package com.dreamback.interviewagent.service.impl;
 
 import com.dreamback.interviewagent.cache.CacheService;
-import com.dreamback.interviewagent.dto.AskResponse;
+import com.dreamback.interviewagent.dto.RetrievalResult;
 import com.dreamback.interviewagent.dto.IngestRequest;
 import com.dreamback.interviewagent.dto.IngestResponse;
 import com.dreamback.interviewagent.dto.SearchResult;
@@ -95,15 +95,15 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     }
 
     @Override
-    public AskResponse ask(String query, int topK) {
+    public RetrievalResult retrieveWithSignals(String query, int topK) {
         return retrieve(query, topK);
     }
 
     /**
-     * 召回 + 融合 + 相关性判定。search 与 ask 共用同一套逻辑与缓存 ——
-     * search 只取结果，ask 额外要 confident 判定。
+     * 召回 + 融合 + 相关性判定。search 与 retrieveWithSignals 共用同一套逻辑与缓存 ——
+     * search 只取结果，retrieveWithSignals 额外要 confident 判定（供分析流程判断笔记覆盖度）。
      */
-    private AskResponse retrieve(String query, int topK) {
+    private RetrievalResult retrieve(String query, int topK) {
         if (query == null || query.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "q 不能为空");
         }
@@ -115,7 +115,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         String mode = (hybridRetriever.isEnabled() ? "h" : "v") + ":g" + Digest.sha256Short(gate.describe());
         String cacheKey = SEARCH_CACHE_PREFIX + mode + ":" + uid + ":" + topK + ":" + Digest.sha256Short(query);
         if (cache != null) {
-            AskResponse cached = cache.get(cacheKey, AskResponse.class);
+            RetrievalResult cached = cache.get(cacheKey, RetrievalResult.class);
             if (cached != null) {
                 return cached;
             }
@@ -160,7 +160,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         double coverage = keywordCoverage(query, results);
         RagRelevanceGate.Decision decision = gate.decide(vecTop1, coverage);
 
-        AskResponse resp = new AskResponse();
+        RetrievalResult resp = new RetrievalResult();
         resp.setResults(results);
         resp.setConfident(decision.confident());
         resp.setReason(decision.reason());

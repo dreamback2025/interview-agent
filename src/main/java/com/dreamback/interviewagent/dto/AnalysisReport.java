@@ -1,5 +1,6 @@
 package com.dreamback.interviewagent.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import java.util.ArrayList;
 import java.util.List;
@@ -31,6 +32,22 @@ public class AnalysisReport {
 
         @JsonPropertyDescription("判断理由")
         private String reason;
+
+        /**
+         * 这道题的知识点，用户自己的笔记里有没有覆盖。
+         *
+         * <p>由后端检索笔记后计算（不是 LLM 输出）—— 标 READ_ONLY 让结构化输出的反序列化跳过它，
+         * 避免模型编一个值覆盖真实结果。null = 未判断（知识库不可用 / 非错题）。
+         */
+        @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+        private Boolean noteSupported;
+
+        /**
+         * 给用户看的补强提示，把「答错」拆成两种完全不同的动作：
+         * 笔记里有 → 重新消化；笔记里没有 → 补一篇（这才是知识缺口）。
+         */
+        @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+        private String noteHint;
     }
 
     @Data

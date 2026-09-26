@@ -4,6 +4,7 @@ import com.dreamback.interviewagent.cache.CacheService;
 import com.dreamback.interviewagent.dto.AnalysisHistoryItem;
 import com.dreamback.interviewagent.dto.AnalysisRecordDto;
 import com.dreamback.interviewagent.dto.AnalysisReport;
+import com.dreamback.interviewagent.dto.RetrievalResult;
 import com.dreamback.interviewagent.entity.InterviewAnalysis;
 import com.dreamback.interviewagent.entity.InterviewQuestion;
 import com.dreamback.interviewagent.entity.InterviewRecord;
@@ -87,6 +88,8 @@ public class AnalysisServiceImpl implements AnalysisService {
             AnalysisReport cached = cache.get(cacheKey, AnalysisReport.class);
             if (cached != null) {
                 log.info("分析结果命中缓存，跳过模型调用：recordId={}", recordId);
+                // 覆盖度必须重判 —— 缓存 key 不含笔记状态，用户可能刚补了笔记
+                annotateNoteCoverage(record, cached);
                 return cached;
             }
         }
@@ -97,10 +100,67 @@ public class AnalysisServiceImpl implements AnalysisService {
 
         persistWeakPoints(record, report);
         saveAnalysis(record, report);
+        annotateNoteCoverage(record, report);
         if (cache != null) {
             cache.put(cacheKey, report);
         }
         return report;
+    }
+
+    /**
+     * 给每道错题标注「用户自己的笔记里有没有覆盖这个知识点」。
+     *
+     * <p><b>这是本项目的核心差异化</b>：把「答错了」拆成两种完全不同的补强动作 ——
+     * <ul>
+     *   <li>笔记里有 → 不是知识缺口，该做的是**重新消化自己的笔记**</li>
+     *   <li>笔记里没有 → 真正的**知识缺口**，该做的是**补一篇笔记**</li>
+     * </ul>
+     * 没有这个标注，所有错题都只能给一句笼统的「去复习一下」。
+     *
+     * <p>判定复用检索那套信号（向量相似度 + 关键词覆盖率，见 {@code RagRelevanceGate}），
+     * 知识库不可用时静默跳过（noteSupported 留 null），绝不因此让分析失败。
+     */
+    private void annotateNoteCoverage(InterviewRecord record, AnalysisReport report) {
+        if (report.getWeakQuestions() == null || report.getWeakQuestions().isEmpty()) {
+            return;
+        }
+        for (AnalysisReport.QuestionReview review : report.getWeakQuestions()) {
+            if (review.getQuestion() == null || review.getQuestion().isBlank()) {
+                continue;
+            }
+            try {
+                RetrievalResult r = knowledgeService.retrieveWithSignals(coverageQuery(record, review.getQuestion()), 3);
+                review.setNoteSupported(r.isConfident());
+                review.setNoteHint(noteHint(r));
+            } catch (Exception e) {
+                log.warn("笔记覆盖度判定失败，该题不标注：{}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 覆盖度判定用的检索词 = 题目原文 + 该题标签。
+     * 带上标签是因为标签是精确的技术词（如 redis-cache、mysql-index-fail），
+     * 能显著提升关键词通道的命中质量。
+     */
+    private String coverageQuery(InterviewRecord record, String question) {
+        for (InterviewQuestion q : record.getQuestions()) {
+            if (question.equals(q.getQuestion()) && q.getTags() != null && !q.getTags().isBlank()) {
+                return question + " " + q.getTags();
+            }
+        }
+        return question;
+    }
+
+    /** 把判定结果翻译成用户能直接照做的建议 */
+    private String noteHint(RetrievalResult r) {
+        String title = r.getResults().isEmpty() ? null : r.getResults().get(0).getTitle();
+        if (r.isConfident()) {
+            return title == null || title.isBlank()
+                    ? "你的笔记里有相关内容 —— 这不是知识缺口，建议重新消化笔记"
+                    : "你的笔记里已有《" + title + "》—— 这不是知识缺口，建议重新消化笔记";
+        }
+        return "你的笔记里没有这块内容 —— 这是知识缺口，建议补一篇笔记";
     }
 
     @Override

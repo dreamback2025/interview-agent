@@ -18,7 +18,7 @@ class RagRelevanceGateTest {
         // vec 0.35 < 0.40 且 cov 0.10 < 0.15
         RagRelevanceGate.Decision d = gate.decide(0.35, 0.10);
         assertThat(d.confident()).isFalse();
-        assertThat(d.reason()).contains("语料里没有找到相关内容");
+        assertThat(d.reason()).contains("没有找到相关内容");
     }
 
     @Test
@@ -39,7 +39,7 @@ class RagRelevanceGateTest {
         // vec 0.50 < 0.58 且 cov 0.20 < 0.35
         RagRelevanceGate.Decision d = gate.decide(0.50, 0.20);
         assertThat(d.confident()).isFalse();
-        assertThat(d.reason()).contains("可能不足以回答");
+        assertThat(d.reason()).contains("覆盖不足");
     }
 
     @Test

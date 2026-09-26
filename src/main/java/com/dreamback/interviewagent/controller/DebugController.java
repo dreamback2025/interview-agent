@@ -1,9 +1,11 @@
 package com.dreamback.interviewagent.controller;
 
+import com.dreamback.interviewagent.dto.RetrievalResult;
 import com.dreamback.interviewagent.repository.InterviewAnalysisRepository;
 import com.dreamback.interviewagent.repository.InterviewRecordRepository;
 import com.dreamback.interviewagent.repository.KnowledgeDocRepository;
 import com.dreamback.interviewagent.security.UserContext;
+import com.dreamback.interviewagent.service.KnowledgeService;
 import com.dreamback.interviewagent.service.MemoryService;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class DebugController {
 
     private final MemoryService memoryService;
+    private final KnowledgeService knowledgeService;
     private final InterviewRecordRepository recordRepository;
     private final InterviewAnalysisRepository analysisRepository;
     private final KnowledgeDocRepository docRepository;
@@ -58,6 +61,19 @@ public class DebugController {
         m.put("analyses", analysisRepository.count());
         m.put("knowledgeDocs", docRepository.count());
         return m;
+    }
+
+    /**
+     * 检索诊断：返回召回结果 + 内部信号（vecTop1 / kwCoverage 等）。
+     *
+     * <p>**这不是产品功能**，只给评测脚本（`scripts/eval/run-eval.py` 的覆盖度判定评估）
+     * 和线上排查用 —— 产品侧只有 {@code /api/knowledge/search}（查看自己的笔记），
+     * 以及分析流程内部的覆盖度判定。
+     */
+    @GetMapping("/retrieval")
+    public RetrievalResult retrieval(@RequestParam String q,
+                                     @RequestParam(defaultValue = "5") int topK) {
+        return knowledgeService.retrieveWithSignals(q, Math.min(Math.max(topK, 1), 20));
     }
 
     /** 去掉连接串里的账号密码，避免泄露 */

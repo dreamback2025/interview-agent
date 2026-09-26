@@ -84,6 +84,10 @@
   .qa.good { border-left-color: var(--ok); }
   .qa .q { font-weight: 600; }
   .qa .r { color: var(--muted); font-size: 13px; }
+  /* 笔记覆盖度：把「答错了」拆成「该重新消化笔记」和「该补一篇笔记」两种动作 */
+  .note-ok, .note-miss { font-size: 12px; margin-top: 6px; padding: 4px 8px; border-radius: 4px; }
+  .note-ok { color: #2f6f4f; background: rgba(47, 111, 79, .08); }
+  .note-miss { color: #c05621; background: rgba(192, 86, 33, .10); }
   .focus { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: #fcfcfd; }
   .focus .p { font-weight: 600; }
   .focus .a { color: #374151; font-size: 13px; }
@@ -630,8 +634,13 @@ function renderReport(rep, target) {
     if (!arr || !arr.length) return '';
     let s = '<label>' + title + '</label>';
     arr.forEach(item => {
+      // noteHint 由后端在分析时判定（检索用户自己的笔记），区分「该复习」与「该补」
+      const note = item.noteHint
+        ? '<div class="' + (item.noteSupported ? 'note-ok' : 'note-miss') + '">' +
+          (item.noteSupported ? '📘 ' : '⚠️ ') + esc(item.noteHint) + '</div>'
+        : '';
       s += '<div class="qa ' + cls + '"><div class="q">' + esc(item.question) + '</div>' +
-        (item.reason ? '<div class="r">' + esc(item.reason) + '</div>' : '') + '</div>';
+        (item.reason ? '<div class="r">' + esc(item.reason) + '</div>' : '') + note + '</div>';
     });
     return s + '<div style="height:6px"></div>';
   };
@@ -723,16 +732,36 @@ $('kbSearch').onclick = async () => {
   box.innerHTML = '<div class="empty">检索中…</div>';
   try {
     const list = await api('/api/knowledge/search?q=' + encodeURIComponent(q) + '&topK=5');
-    if (!list.length) { box.innerHTML = '<div class="empty">没有命中片段</div>'; return; }
-    let h = '<label>命中 ' + list.length + ' 条（按相似度排序）</label>';
-    list.forEach(r => {
-      h += '<div class="focus">'
-        + '<div class="p">' + esc(r.title || '未命名') + ' '
-        + '<span class="tag">相似度 ' + (r.score * 100).toFixed(1) + '%</span></div>'
-        + '<div class="a">' + esc(r.content) + '</div>'
-        + '</div>';
-    });
+    let h = '';
+    if (!list.length) {
+      h = '<div class="empty">没有命中片段</div>';
+    } else {
+      h = '<label>命中 ' + list.length + ' 条（按相似度排序）</label>';
+      list.forEach(r => {
+        h += '<div class="focus">'
+          + '<div class="p">' + esc(r.title || '未命名') + ' '
+          + '<span class="tag">相似度 ' + (r.score * 100).toFixed(1) + '%</span></div>'
+          + '<div class="a">' + esc(r.content) + '</div>'
+          + '</div>';
+      });
+    }
+    // 命中都很弱 → 大概率是「笔记里压根没录过」，引导补录。
+    // 这是自建知识库该有的交互：搜不到不是错误，是一个补录入口。
+    if (!list.length || list[0].score < 0.5) {
+      h += '<div class="note-miss" style="margin-top:10px">⚠️ 你的笔记里可能没有这块内容 —— '
+        + '<a href="#" id="kbGotoUpload">去补一篇</a></div>';
+    }
     box.innerHTML = h;
+    const go = $('kbGotoUpload');
+    if (go) {
+      go.onclick = (e) => {
+        e.preventDefault();
+        $('kbTitle').value = q.slice(0, 40);
+        $('kbContent').focus();
+        $('kbTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        toast('已把检索词填进标题，补完正文点「入库」即可');
+      };
+    }
   } catch (e) {
     box.innerHTML = '<div class="err">检索失败：' + esc(e.message) + '</div>';
   }

@@ -328,24 +328,28 @@ def main():
         out('正样本最低分 %.1f%%  vs  L2~L4 最高分 %.1f%%  → 不重叠'
             % (pos_min, hard_max))
 
-    # ---------- 拒答策略评估 ----------
+    # ---------- 笔记覆盖度判定评估 ----------
+    # 语义映射：正样本 = 语料里有这个知识点（相当于「用户笔记里有」）→ 应判 confident=true；
+    #          负样本 = 语料里没有 → 应判 confident=false（正确识别为「知识缺口」）
     out()
-    out('=== 拒答策略评估（/api/knowledge/ask）===')
+    out('=== 笔记覆盖度判定评估（/api/debug/retrieval）===')
 
-    def ask(q, topk=TOPK):
+    def judge(q, topk=TOPK):
         qs = urllib.parse.urlencode({'q': q, 'topK': topk})
-        return api('/api/knowledge/ask?' + qs) or {}
+        return api('/api/debug/retrieval?' + qs) or {}
 
-    pos_ask = [(item, ask(item['q'])) for item in positives]
-    neg_ask = [(item, ask(item[0])) for item in negatives]
+    pos_ask = [(item, judge(item['q'])) for item in positives]
+    neg_ask = [(item, judge(item[0])) for item in negatives]
 
     def rejected(r):
         return not r.get('confident', True)
 
     gate_pos_rej = sum(1 for _, r in pos_ask if rejected(r))
     gate_neg_rej = sum(1 for _, r in neg_ask if rejected(r))
-    out('  当前阈值：正样本被拒 %d/%d（漏答） 负样本被拒 %d/%d（正确拒绝）'
-        % (gate_pos_rej, n, gate_neg_rej, len(neg_ask)))
+    out('  正样本被判「笔记无覆盖」 %d/%d（误判 —— 笔记里其实有）'
+        % (gate_pos_rej, n))
+    out('  负样本被判「笔记无覆盖」 %d/%d（正确 —— 确实没有）'
+        % (gate_neg_rej, len(neg_ask)))
     by_lv_rej = {}
     for (q, lv, note), r in neg_ask:
         e = by_lv_rej.setdefault(lv, [0, 0])
@@ -355,7 +359,7 @@ def main():
     for lv in LEVELS:
         if lv in by_lv_rej:
             a, b = by_lv_rej[lv]
-            out('    %s 拒绝率 %d/%d = %.1f%%' % (lv, a, b, 100.0 * a / b))
+            out('    %s 正确识别为知识缺口 %d/%d = %.1f%%' % (lv, a, b, 100.0 * a / b))
 
     # 用已收集的信号本地模拟其他阈值组合（不重调 API，秒级出全网格）
     sig = [{'vec': r.get('signals', {}).get('vecTop1', 0.0),
@@ -393,9 +397,9 @@ def main():
             for cl in [0.15, 0.20, 0.25, 0.30]
             for cm in [0.30, 0.35, 0.40, 0.45, 0.50]]
     out()
-    out('  阈值网格（vl=vecLow vm=vecMid cl=covLow cm=covMid → 漏答 / L1拒 / L2~L4拒）')
+    out('  阈值网格（vl=vecLow vm=vecMid cl=covLow cm=covMid → 正样本误判 / L1识别 / L2~L4识别）')
     for g in sorted([x for x in grid if x[4] <= 5], key=lambda x: -x[6])[:12]:
-        out('    vl=%.2f vm=%.2f cl=%.2f cm=%.2f → 漏答 %2d/%d  L1拒 %2d/%d  L2~L4拒 %2d/%d'
+        out('    vl=%.2f vm=%.2f cl=%.2f cm=%.2f → 误判 %2d/%d  L1识别 %2d/%d  L2~L4识别 %2d/%d'
             % (g[0], g[1], g[2], g[3], g[4], n, g[5], n_l1, g[6], n_hard))
 
     # ---------- 分布图 ----------
@@ -536,10 +540,17 @@ def main():
     t_zero = next((t for t in range(30, 101) if all(x['score'] < t for x in hard)), 100)
     pos_pass_zero = 100.0 * sum(1 for s in pos_top1_scores if s >= t_zero) / n
 
-    md.append('## 5. 拒答策略评估')
+    md.append('## 5. 笔记覆盖度判定评估')
     md.append('')
-    md.append('§3 / §4 证明了「该拒绝的拒绝不了」。于是加一层**相关性闸门**（`RagRelevanceGate`）：'
-              '不只返回最像的片段，还要判断这些片段够不够回答问题，不够就返回 `confident=false`。')
+    md.append('§3 / §4 证明了「该拒绝的拒绝不了」—— 但这恰恰不是要「拒答」，而是要**把判定用在分析报告上**：')
+    md.append('')
+    md.append('| 判定 | 报告里说什么 | 用户该做什么 |')
+    md.append('|---|---|---|')
+    md.append('| 笔记已覆盖 | 「你的笔记里已有《X》—— 这不是知识缺口」| 重新消化自己的笔记 |')
+    md.append('| 笔记未覆盖 | 「你的笔记里没有这块内容 —— 这是知识缺口」| 补一篇笔记 |')
+    md.append('')
+    md.append('没有这个判定，所有错题都只能给一句笼统的「去复习一下」。')
+    md.append('判定用 `RagRelevanceGate`，与检索共用同一套信号。')
     md.append('')
     md.append('### 为什么不用单一相似度阈值')
     md.append('')
@@ -551,8 +562,8 @@ def main():
     md.append('| `vecTop1` | 向量通道 top1 余弦相似度 | 偏高（语义确实像）|')
     md.append('| `kwCoverage` | 查询分词后落在 **top1 文档**里的 token 占比 | 偏低（具体词对不上）|')
     md.append('')
-    md.append('判定规则（阈值可配）：`vecTop1 < vecLow 且 coverage < covLow` → 拒；'
-              '`vecTop1 < vecMid 且 coverage < covMid` → 拒。')
+    md.append('判定规则（阈值可配）：`vecTop1 < vecLow 且 coverage < covLow` → 判「无覆盖」；'
+              '`vecTop1 < vecMid 且 coverage < covMid` → 判「无覆盖」。')
     md.append('')
     md.append('> **踩过的坑**：第二个信号最初用的是「关键词通道命中文档数」，实测**完全无效** —— '
               '关键词通道是 OR 查询（`tok1 | tok2 | ...`），任意一个 token 命中就计数，'
@@ -560,33 +571,34 @@ def main():
               '跨域的「Kafka 消息积压该怎么处理」照样命中 6 个文档，正负样本命中数都是 6~15，毫无区分度。'
               '换成覆盖率（要求 token 落在**同一个文档**里）之后才有区分力。')
     md.append('')
-    md.append('### 实测（当前阈值）')
+    md.append('### 实测（阈值由网格搜索得到）')
     md.append('')
     md.append('| 指标 | 结果 |')
     md.append('|---|---|')
-    md.append('| 正样本被拒（漏答） | %d/%d = %.1f%% |' % (gate_pos_rej, n, 100.0 * gate_pos_rej / n))
-    md.append('| 负样本被拒（正确拒绝） | %d/%d = %.1f%% |'
+    md.append('| **正样本误判**（笔记里其实有，却判成缺口）| %d/%d = %.1f%% |'
+              % (gate_pos_rej, n, 100.0 * gate_pos_rej / n))
+    md.append('| 负样本正确识别（确实没有，判成缺口）| %d/%d = %.1f%% |'
               % (gate_neg_rej, len(neg_ask), 100.0 * gate_neg_rej / len(neg_ask)))
     for lv in LEVELS:
         if by_lv_rej.get(lv, [0, 0])[1]:
             a, b = by_lv_rej[lv]
-            md.append('| %s 档拒绝率 | %d/%d = %.1f%% |' % (lv, a, b, 100.0 * a / b))
+            md.append('| %s 档正确识别率 | %d/%d = %.1f%% |' % (lv, a, b, 100.0 * a / b))
     md.append('')
     md.append('### 阈值权衡（同一批信号本地模拟，不重调模型）')
     md.append('')
-    md.append('| vecLow | vecMid | covLow | covMid | 漏答 | L1 拒 | L2~L4 拒 |')
+    md.append('| vecLow | vecMid | covLow | covMid | 正样本误判 | L1 识别 | L2~L4 识别 |')
     md.append('|---|---|---|---|---|---|---|')
     for g in sorted([x for x in grid if x[4] <= 3], key=lambda x: -x[6])[:8]:
         md.append('| %.2f | %.2f | %.2f | %.2f | %d/%d | %d/%d | **%d/%d** |'
                   % (g[0], g[1], g[2], g[3], g[4], n, g[5], n_l1, g[6], n_hard))
     md.append('')
-    md.append('**权衡逻辑**：漏答（把能答的问题拒了）的代价**高于**误答（答了语料里没有的内容）—— '
-              '用户被拒后可以换个问法，但拿到一个「看似相关实则应拒」的答案会被直接带偏。'
-              '所以策略是「在漏答可控的前提下，尽量多拒难负样本」。')
+    md.append('**权衡逻辑**：把「笔记里有」误判成「没有」，代价是用户白整理一篇笔记；'
+              '漏判「确实没有」，代价是用户的补强计划里少了一个真实缺口。'
+              '两者都要压，所以取「误判可控时识别率最高」的点。')
     md.append('')
-    md.append('> 局限：闸门只能拒绝，不能**正确回答**。L3 这类「语料讲了规则、没讲这个例外」的问题，'
-              '理想行为是回答「我讲了最左前缀，但没覆盖 8.0 的跳跃扫描」—— 这需要检索时带上'
-              '「知识点覆盖范围」的元信息，属于后续工作。')
+    md.append('> 局限：判定只有「有 / 没有」二元，表达不了「部分覆盖」。'
+              'L3 这类「笔记讲了规则、没讲这个例外」的知识点会被判成「已覆盖」——'
+              '但用户其实需要补充边界情况。要解决它需要笔记带上「覆盖范围」的元信息，属后续工作。')
     md.append('')
     md.append('## 6. 结论')
     md.append('')

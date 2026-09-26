@@ -5,7 +5,14 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * 相关性闸门：判断「检索到的内容够不够回答问题」，不够就拒答。
+ * 相关性闸门：判断「检索到的内容是否确实覆盖了这个问题」。
+ *
+ * <p><b>在产品里的用途</b>：分析面试时，对每道答错的题判断「用户自己的笔记里有没有这个知识点」——
+ * 有 = 不是知识缺口，该重新消化笔记；没有 = 真正的知识缺口，该补一篇。
+ *
+ * <p>早期一版把它用作「问答拒答」（系统判断能不能回答用户），但本项目并没有
+ * 「系统替用户作答」的场景（系统只做两件事：分析、以及把匹配的笔记列给用户看），
+ * 因此已纠正为当前的用途 —— 判定结果服务于**分析报告**，不服务于「答不答」。
  *
  * <p><b>为什么不能用单一相似度阈值</b>：分级负样本实测给出反例 ——
  * 正样本 Top1 最低分 38.3%，而难负样本（L2~L4）最高分 80.1%，**重叠 41.8 个百分点**。
@@ -69,12 +76,12 @@ public class RagRelevanceGate {
         }
         if (vecTop1 < vecLow && coverage < covLow) {
             return new Decision(false,
-                    "语料里没有找到相关内容（语义相似度 %.0f%%、关键词覆盖 %.0f%% 都偏低）：请换个问法，或先把这块笔记补进知识库"
+                    "没有找到相关内容（语义相似度 %.0f%%、关键词覆盖 %.0f%% 都偏低）"
                             .formatted(vecTop1 * 100, coverage * 100));
         }
         if (vecTop1 < vecMid && coverage < covMid) {
             return new Decision(false,
-                    "找到的内容可能不足以回答（语义相似度 %.0f%%、关键词覆盖 %.0f%%）：建议问得更具体一些"
+                    "找到的内容覆盖不足（语义相似度 %.0f%%、关键词覆盖 %.0f%%）"
                             .formatted(vecTop1 * 100, coverage * 100));
         }
         return Decision.accept();
