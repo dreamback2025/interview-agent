@@ -103,8 +103,10 @@ services:
       VECTOR_DB_URL: jdbc:postgresql://postgres:5432/interview_vector
       VECTOR_DB_USER: interview
       VECTOR_DB_PASSWORD: interview
-      # 容器内互访用服务名，不要用 localhost
-      OLLAMA_BASE_URL: http://ollama:11434
+      # 容器内互访用服务名，不要用 localhost。
+      # 若 Ollama 已装在宿主机（避免再拉 1.2GB 镜像和模型），用下面这个覆盖：
+      #   OLLAMA_BASE_URL=http://host.docker.internal:11434 docker compose up -d --no-deps --build app
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       # 混合检索（向量 + 关键词 tsvector + RRF）；业务库与向量库同库，关键词通道可用
       RAG_HYBRID_ENABLED: ${RAG_HYBRID_ENABLED:-true}
       REDIS_HOST: redis
@@ -115,7 +117,13 @@ services:
       RABBITMQ_PASSWORD: interview
       # 留空也能启动：应用自动进入离线桩模式（与「全链路降级」的设计一致）
       # 要接真实模型就先 export DEEPSEEK_API_KEY=sk-xxx 再 up
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      #
+      # ⚠️ 这里必须用 `:-` 而不是 `:`，且默认值不能是空字符串：
+      # compose 会把 `${VAR:-}` 展开成空串传给容器，而 Spring 的占位符
+      # `${DEEPSEEK_API_KEY:默认}` 只在变量「未设置」时回退、空串不回退，
+      # 结果 api-key 为空 → Spring AI 的 openAiApi bean 直接让应用起不来
+      #（曾经踩过：docker compose up 后容器一直 Restarting）。
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-sk-placeholder-not-set}
       # 鉴权：JWT 密钥务必外部注入，默认值只是本地开发占位
       #   export JWT_SECRET="$(openssl rand -base64 48)"
       SECURITY_ENABLED: ${SECURITY_ENABLED:-true}

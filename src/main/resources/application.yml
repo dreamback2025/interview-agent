@@ -36,6 +36,17 @@ spring:
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
       # 从环境变量读取：DEEPSEEK_API_KEY=sk-xxx ./run.sh
       # 未配置或仍是占位符时自动降级为离线桩模式（见 LlmConfig），不会启动失败
+      # ⚠️ 这个值必须**始终非空**：Spring AI 的 openAiApi bean 会 Assert.hasText(api-key)，
+      # 一旦为空，应用在启动阶段就崩（走不到 LlmConfig 的 stub 分支）。
+      #
+      # 两个坑（都实测过）：
+      # 1) Spring 占位符 ${VAR:默认} 只在变量「未设置」时回退 —— 变量被设成**空字符串**
+      #    （如 docker compose 的 ${VAR:-}）时不回退，于是 api-key 变空 → 崩；
+      # 2) Spring 不认 shell 的 :- 语法，写成 ${VAR:-默认} 会把 '-' 当成默认值的一部分
+      #    （例如 ${RAG_ENABLED:-true} 的默认值变成字符串 "-true"，布尔解析直接失败）。
+      #
+      # 结论：靠「调用方保证传入非空占位符」来解决 —— 见 docker-compose.yml 里的
+      # DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-sk-placeholder-not-set}
       api-key: ${DEEPSEEK_API_KEY:sk-placeholder-not-set}
       chat:
         options:

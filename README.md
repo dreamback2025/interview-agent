@@ -552,6 +552,28 @@ VECTOR_DB_URL = jdbc:postgresql://postgres:5432/interview_vector    # 向量表�
 bash scripts/run-postgres-local.sh      # 与 compose 里 app 服务完全相同的环境变量
 ```
 
+### 应用镜像构建（多阶段）实测
+
+```bash
+docker compose build app
+# 或本机 Ollama 已跑时，跳过 ollama 服务：
+OLLAMA_BASE_URL=http://host.docker.internal:11434 docker compose up -d --no-deps --build app
+```
+
+**实测记录**：
+
+| 项 | 结果 |
+|---|---|
+| 构建耗时 | 约 4 分钟（首次，含拉基础镜像 + Maven 依赖） |
+| 运行镜像大小 | 810 MB（`eclipse-temurin:21-jre`，多阶段后不含 Maven 与源码） |
+| 容器内运行用户 | **uid 1001（非 root）** ✅ |
+| 健康检查 | `healthy`（`/dev/tcp` 探测 8080，容器内无 curl） |
+| 端到端自检 | **34/34 通过、0 失败**（连容器 DB + 容器 Redis/RabbitMQ） |
+
+> 沙箱环境提示：本机 `docker build` 用 buildx 时可能报 `operation not permitted`（写
+> `~/.docker/buildx/` 被拒）。这时用 `DOCKER_BUILDKIT=0 docker compose build app`
+> 走传统 builder 即可。
+
 ### 已验证 / 未验证
 
 | 项 | 状态 |
@@ -560,9 +582,10 @@ bash scripts/run-postgres-local.sh      # 与 compose 里 app 服务完全相同
 | PG 上跑通录入 / 分析 / RAG 检索 / 会话记忆 | ✅ 实测 |
 | **容器数据库**（`pgvector/pgvector:pg16` + 初始化脚本 + 持久化卷） | ✅ 实测（PG 16.15 / pgvector 0.8.6 / 自检 34/34） |
 | 容器 Redis / RabbitMQ 与应用的联动（缓存命中 / MQ 投递） | ✅ 实测 |
+| **应用镜像构建 `docker build`（多阶段，非 root）** | ✅ 实测（810MB 镜像、uid 1001） |
+| **容器化应用端到端自检** | ✅ 实测（34/34 通过） |
 | `docker-compose.yml` YAML 语法与 env 契约 | ✅ 校验通过 |
-| **应用镜像构建 `docker build`（多阶段）** | ⚠️ 未实测 |
-| **`docker compose up -d --build` 全量一键起** | ⚠️ 未实测（建议先单独起 postgres 验证，再全量） |
+| `docker compose up -d --build` 含 **ollama 服务** 的全量一键起 | ⚠️ 未实测（本机 11434 已被 Ollama 占用，会端口冲突；用 `OLLAMA_BASE_URL=http://host.docker.internal:11434` 可绕开） |
 
 ---
 
@@ -1003,6 +1026,13 @@ interview-agent/
 - **默认开启鉴权**（`SECURITY_ENABLED=true`），业务接口都要 `Authorization: Bearer <token>`；
   演示账号 `demo/demo123` 启动时自动创建，生产环境请设 `DEMO_USER_ENABLED=false` 并换强密钥。
 - `/api/debug/*` 会暴露连接串（已脱敏密码）与注入给模型的 prompt 原文；对外部署时设 `DEBUG_ENDPOINTS=false` 关闭。
+- **无 Key 时不要把 `DEEPSEEK_API_KEY` 设成空字符串**：Spring AI 的 `openAiApi` bean 会
+  `Assert.hasText(api-key)`，空值会让应用在**启动阶段就崩溃**（容器表现是一直 `Restarting`）。
+  compose 已保证传占位符 `sk-placeholder-not-set`；自己 `docker run -e` 时也必须传非空值。
+  （实测过几种绕法：`spring.ai.openai.chat.enabled=false` **无效**；
+  Spring 占位符 `${VAR:默认}` 对空字符串不回退，而 `:-` 语法 Spring 会把 `-` 当默认值的一部分。）
+- **JWT_SECRET 允许为空**：未配置或为空时会用内置开发密钥并打 WARN（保证开箱能跑）；
+  但**配置了却太短（< 32 字节）会直接启动失败** —— 弱密钥比没配更危险，刻意快速失败。
 
 ---
 
