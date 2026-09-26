@@ -1,5 +1,6 @@
 package com.dreamback.interviewagent.controller;
 
+import com.dreamback.interviewagent.dto.AskResponse;
 import com.dreamback.interviewagent.dto.IngestRequest;
 import com.dreamback.interviewagent.dto.IngestResponse;
 import com.dreamback.interviewagent.dto.SearchResult;
@@ -37,6 +38,18 @@ public class KnowledgeController {
     public List<SearchResult> search(@RequestParam String q,
                                      @RequestParam(defaultValue = "5") int topK) {
         return knowledgeService.search(q, Math.min(Math.max(topK, 1), 20));
+    }
+
+    /**
+     * 带相关性判定的检索 —— 与 /search 同一套召回，额外返回 confident。
+     *
+     * <p>confident=false 表示「语料里很可能没有相关内容」，前端应展示 reason 而不是硬答。
+     * 保留 /search 不变是为了兼容既有调用方。
+     */
+    @GetMapping("/ask")
+    public AskResponse ask(@RequestParam String q,
+                           @RequestParam(defaultValue = "5") int topK) {
+        return knowledgeService.ask(q, Math.min(Math.max(topK, 1), 20));
     }
 
     /** 已导入文档目录 */

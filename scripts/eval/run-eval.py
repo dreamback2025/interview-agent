@@ -328,6 +328,76 @@ def main():
         out('正样本最低分 %.1f%%  vs  L2~L4 最高分 %.1f%%  → 不重叠'
             % (pos_min, hard_max))
 
+    # ---------- 拒答策略评估 ----------
+    out()
+    out('=== 拒答策略评估（/api/knowledge/ask）===')
+
+    def ask(q, topk=TOPK):
+        qs = urllib.parse.urlencode({'q': q, 'topK': topk})
+        return api('/api/knowledge/ask?' + qs) or {}
+
+    pos_ask = [(item, ask(item['q'])) for item in positives]
+    neg_ask = [(item, ask(item[0])) for item in negatives]
+
+    def rejected(r):
+        return not r.get('confident', True)
+
+    gate_pos_rej = sum(1 for _, r in pos_ask if rejected(r))
+    gate_neg_rej = sum(1 for _, r in neg_ask if rejected(r))
+    out('  当前阈值：正样本被拒 %d/%d（漏答） 负样本被拒 %d/%d（正确拒绝）'
+        % (gate_pos_rej, n, gate_neg_rej, len(neg_ask)))
+    by_lv_rej = {}
+    for (q, lv, note), r in neg_ask:
+        e = by_lv_rej.setdefault(lv, [0, 0])
+        e[1] += 1
+        if rejected(r):
+            e[0] += 1
+    for lv in LEVELS:
+        if lv in by_lv_rej:
+            a, b = by_lv_rej[lv]
+            out('    %s 拒绝率 %d/%d = %.1f%%' % (lv, a, b, 100.0 * a / b))
+
+    # 用已收集的信号本地模拟其他阈值组合（不重调 API，秒级出全网格）
+    sig = [{'vec': r.get('signals', {}).get('vecTop1', 0.0),
+            'cov': r.get('signals', {}).get('kwCoverage', 0.0), 'pos': True} for _, r in pos_ask]
+    sig += [{'vec': r.get('signals', {}).get('vecTop1', 0.0),
+             'cov': r.get('signals', {}).get('kwCoverage', 0.0), 'pos': False, 'level': lv}
+            for (q, lv, note), r in neg_ask]
+
+    out()
+    out('  信号分布（vecTop1 / kwCoverage）—— 定阈值的依据：')
+    groups = [('正样本', [s for s in sig if s['pos']])]
+    groups += [(lv, [s for s in sig if not s['pos'] and s['level'] == lv]) for lv in LEVELS]
+    for label, sel in groups:
+        if not sel:
+            continue
+        vs = sorted(s['vec'] for s in sel)
+        cs = sorted(s['cov'] for s in sel)
+        out('    %-4s n=%2d  vec 中位 %3.0f%% 区间 %3.0f%%~%3.0f%%  |  cov 中位 %3.0f%% 区间 %3.0f%%~%3.0f%%'
+            % (label, len(sel),
+               vs[len(vs) // 2] * 100, vs[0] * 100, vs[-1] * 100,
+               cs[len(cs) // 2] * 100, cs[0] * 100, cs[-1] * 100))
+
+    def sim(vl, vm, cl, cm):
+        def hit(s):
+            return (s['vec'] < vl and s['cov'] < cl) or (s['vec'] < vm and s['cov'] < cm)
+        rp = sum(1 for s in sig if s['pos'] and hit(s))
+        r1 = sum(1 for s in sig if not s['pos'] and s['level'] == 'L1' and hit(s))
+        rh = sum(1 for s in sig if not s['pos'] and s['level'] != 'L1' and hit(s))
+        return rp, r1, rh
+
+    grid = [(vl, vm, cl, cm) + sim(vl, vm, cl, cm)
+            for vl in [0.40, 0.42, 0.45, 0.48, 0.50]
+            for vm in [0.55, 0.58, 0.60, 0.62, 0.65]
+            if vm >= vl
+            for cl in [0.15, 0.20, 0.25, 0.30]
+            for cm in [0.30, 0.35, 0.40, 0.45, 0.50]]
+    out()
+    out('  阈值网格（vl=vecLow vm=vecMid cl=covLow cm=covMid → 漏答 / L1拒 / L2~L4拒）')
+    for g in sorted([x for x in grid if x[4] <= 5], key=lambda x: -x[6])[:12]:
+        out('    vl=%.2f vm=%.2f cl=%.2f cm=%.2f → 漏答 %2d/%d  L1拒 %2d/%d  L2~L4拒 %2d/%d'
+            % (g[0], g[1], g[2], g[3], g[4], n, g[5], n_l1, g[6], n_hard))
+
     # ---------- 分布图 ----------
     svg_path = os.path.join(os.path.dirname(REPORT), 'rag-eval-distribution.svg')
     render_distribution_svg(svg_path, pos_top1_scores, by_level, LEVEL_DESC)
@@ -466,7 +536,59 @@ def main():
     t_zero = next((t for t in range(30, 101) if all(x['score'] < t for x in hard)), 100)
     pos_pass_zero = 100.0 * sum(1 for s in pos_top1_scores if s >= t_zero) / n
 
-    md.append('## 5. 结论')
+    md.append('## 5. 拒答策略评估')
+    md.append('')
+    md.append('§3 / §4 证明了「该拒绝的拒绝不了」。于是加一层**相关性闸门**（`RagRelevanceGate`）：'
+              '不只返回最像的片段，还要判断这些片段够不够回答问题，不够就返回 `confident=false`。')
+    md.append('')
+    md.append('### 为什么不用单一相似度阈值')
+    md.append('')
+    md.append('正样本最低分 %.1f%%、难负样本最高分 %.1f%%，**重叠 %.1f 个百分点** —— ' % (pos_min, hard_max, max(0.0, hard_max - pos_min)))
+    md.append('单一阈值必然二选一地失败。改用**双信号**：')
+    md.append('')
+    md.append('| 信号 | 含义 | 难负样本上的表现 |')
+    md.append('|---|---|---|')
+    md.append('| `vecTop1` | 向量通道 top1 余弦相似度 | 偏高（语义确实像）|')
+    md.append('| `kwCoverage` | 查询分词后落在 **top1 文档**里的 token 占比 | 偏低（具体词对不上）|')
+    md.append('')
+    md.append('判定规则（阈值可配）：`vecTop1 < vecLow 且 coverage < covLow` → 拒；'
+              '`vecTop1 < vecMid 且 coverage < covMid` → 拒。')
+    md.append('')
+    md.append('> **踩过的坑**：第二个信号最初用的是「关键词通道命中文档数」，实测**完全无效** —— '
+              '关键词通道是 OR 查询（`tok1 | tok2 | ...`），任意一个 token 命中就计数，'
+              '而「消息」「处理」「怎么」这类通用词在语料里到处都是。'
+              '跨域的「Kafka 消息积压该怎么处理」照样命中 6 个文档，正负样本命中数都是 6~15，毫无区分度。'
+              '换成覆盖率（要求 token 落在**同一个文档**里）之后才有区分力。')
+    md.append('')
+    md.append('### 实测（当前阈值）')
+    md.append('')
+    md.append('| 指标 | 结果 |')
+    md.append('|---|---|')
+    md.append('| 正样本被拒（漏答） | %d/%d = %.1f%% |' % (gate_pos_rej, n, 100.0 * gate_pos_rej / n))
+    md.append('| 负样本被拒（正确拒绝） | %d/%d = %.1f%% |'
+              % (gate_neg_rej, len(neg_ask), 100.0 * gate_neg_rej / len(neg_ask)))
+    for lv in LEVELS:
+        if by_lv_rej.get(lv, [0, 0])[1]:
+            a, b = by_lv_rej[lv]
+            md.append('| %s 档拒绝率 | %d/%d = %.1f%% |' % (lv, a, b, 100.0 * a / b))
+    md.append('')
+    md.append('### 阈值权衡（同一批信号本地模拟，不重调模型）')
+    md.append('')
+    md.append('| vecLow | vecMid | covLow | covMid | 漏答 | L1 拒 | L2~L4 拒 |')
+    md.append('|---|---|---|---|---|---|---|')
+    for g in sorted([x for x in grid if x[4] <= 3], key=lambda x: -x[6])[:8]:
+        md.append('| %.2f | %.2f | %.2f | %.2f | %d/%d | %d/%d | **%d/%d** |'
+                  % (g[0], g[1], g[2], g[3], g[4], n, g[5], n_l1, g[6], n_hard))
+    md.append('')
+    md.append('**权衡逻辑**：漏答（把能答的问题拒了）的代价**高于**误答（答了语料里没有的内容）—— '
+              '用户被拒后可以换个问法，但拿到一个「看似相关实则应拒」的答案会被直接带偏。'
+              '所以策略是「在漏答可控的前提下，尽量多拒难负样本」。')
+    md.append('')
+    md.append('> 局限：闸门只能拒绝，不能**正确回答**。L3 这类「语料讲了规则、没讲这个例外」的问题，'
+              '理想行为是回答「我讲了最左前缀，但没覆盖 8.0 的跳跃扫描」—— 这需要检索时带上'
+              '「知识点覆盖范围」的元信息，属于后续工作。')
+    md.append('')
+    md.append('## 6. 结论')
     md.append('')
     md.append('1. **排序指标可用**：Hit@1 %.1f%%、Hit@3 %.1f%%、MRR %.3f，说明检索在'
               '「自然口语提问 → 知识点」这个任务上排序是有效的。' % (100.0 * h1 / n, 100.0 * h3 / n, mrr))

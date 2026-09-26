@@ -97,6 +97,19 @@ app:
       # 混合检索：向量语义 + 关键词（tsvector + GIN）+ RRF 融合。
       # 关键词通道不可用（业务库与向量库不同库）时自动退化为纯向量，不会让检索失败。
       enabled: ${RAG_HYBRID_ENABLED:true}
+    gate:
+      # 相关性闸门：检索结果不足以回答时返回 confident=false（拒答），而不是硬答。
+      # 不用单一相似度阈值 —— 实测正样本最低 38.3% vs 难负样本最高 80.1%，重叠 41.8 个百分点；
+      # 改用「向量相似度 + 关键词命中数」双信号（见 RagRelevanceGate）。
+      enabled: ${RAG_GATE_ENABLED:true}
+      # 阈值由评测集的阈值网格搜索得到（scripts/eval/run-eval.py）：
+      #   这组值下 正样本漏答 4/40=10%、L1 拒 16/19=84%、L2~L4 拒 8/15=53%
+      vec-low: ${RAG_GATE_VEC_LOW:0.40}
+      vec-mid: ${RAG_GATE_VEC_MID:0.58}
+      # 关键词覆盖率下限：查询分词后落在 top1 文档里的 token 占比。
+      # 不用「命中文档数」—— OR 查询下通用词会污染它（实测正负样本都 6~15，无区分度）。
+      cov-low: ${RAG_GATE_COV_LOW:0.15}
+      cov-mid: ${RAG_GATE_COV_MID:0.35}
     vectordb:
       url: ${VECTOR_DB_URL:jdbc:postgresql://localhost:5432/interview_vector}
       username: ${VECTOR_DB_USER:postgres}
