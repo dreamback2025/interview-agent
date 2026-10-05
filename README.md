@@ -682,8 +682,26 @@ OLLAMA_BASE_URL=http://host.docker.internal:11434 docker compose up -d --no-deps
 3. **状态变更独立于业务事务**（`REQUIRES_NEW`）—— 分析失败时业务数据该回滚就回滚，
    但"这次失败了"这件事必须记下来，否则任务会永远停在 RUNNING。
 
-**降级**：`app.async.mode=mq` 时投递 RabbitMQ，发送失败自动转本地线程池；
-线程池队列满时用 `CallerRunsPolicy` 把压力还给调用方（HTTP 变慢），形成背压而不是静默丢任务。
+**降级**：`app.async.mode=mq` 时投递 RabbitMQ，发送失败自动转本地线程池。
+
+**消费者并发（重要）**：`@RabbitListener` 不写 `concurrency` 时默认是 **1** —— 异步通道的吞吐
+被钉死在「一次一个」，比同步接口还慢一个数量级。现在显式配置（`app.rabbitmq` 走 Spring 属性）：
+
+```yaml
+spring.rabbitmq.listener.simple:
+  concurrency: 4        # MQ_CONSUMER_MIN
+  max-concurrency: 16   # MQ_CONSUMER_MAX
+  prefetch: 4           # ⚠️ 必须跟着 concurrency 一起改
+```
+
+> **prefetch 的坑**：默认 250 会让第一个消费者一口气把 250 条消息抓进本地内存，
+> 其余消费者无活可干 —— 只把 concurrency 调到 16 而不动 prefetch，扩容等于没扩。
+> prefetch 取值应 ≈ 单消费者手上的在飞数。
+
+**队列满时不再用 `CallerRunsPolicy`**：让提交线程自己跑任务，看着是「不丢任务」，
+实际是把几十秒的分析压到 HTTP 请求线程上（用户干等）或 MQ 消费线程上（消费停摆）。
+现在改成 `AbortPolicy` + 捕获拒绝 —— 任务此时**已经落库为 PENDING**，拒绝不等于丢失，
+保持 PENDING 交给补偿扫描重试。宁可让调用方立刻知道「忙」，也不要它在无感知的情况下等死。
 
 实测（真实 RabbitMQ 容器）：
 
@@ -767,37 +785,60 @@ LLM 调用按 token 收费且有速率限制，**限流是成本控制的最后�
 |---|---|---|
 | 算法 | **滑动窗口**（ZSET + 时间戳） | 固定窗口在边界会突发（59s 内 N 次 + 第 1s N 次 = 2N 次/s），滑动窗口以「当前时刻往前推 60s」为窗口，更精确 |
 | 原子性 | **Lua 脚本** | `ZREMRANGEBYSCORE → ZCARD → ZADD → PEXPIRE` 四步必须原子，否则并发下多个请求会同时通过判断再各自 ZADD，限流失效 |
-| 维度 | `userId + 类.方法` | 同用户调 analyze 和调 mock/start 各算各的；免鉴权模式按 `anonymous` 统一计数 |
-| 降级 | **Redis 不可用时放行** | 与项目「可降级组件不阻断主流程」哲学一致 —— 限流挂了最多多烧几个 token，不能让用户连分析都用不了 |
+| 频率维度 | `userId + 类.方法`，另有全局 `global:类.方法` | 同用户调 analyze 和调 mock/start 各算各的；免鉴权模式按 `anonymous` 统一计数。**全局维度不可省**：每个用户都没超限，N 个用户叠起来照样打爆容量 |
+| **并发维度** | 同上，但记的是「**在飞数**」而非「次数」 | 见下一节 —— 这才是保护线程池/连接池的正确维度 |
+| 降级 | **Redis 不可用时放行**，并发维度退化为**本机计数** | 与项目「可降级组件不阻断主流程」哲学一致 —— 限流挂了最多多烧几个 token，不能让用户连分析都用不了 |
 
-### 标注的接口与配额
+### 为什么不只限频率：限的维度要跟成本模型走
 
-| 接口 | qpm | 理由 |
+频率（qpm）限的是**速率**，但真正吃掉资源的是**同时在跑的数量**。二者靠耗时换算：
+
+```
+在飞并发 = qpm × 平均耗时 ÷ 60
+```
+
+一次分析 25 秒时，20 qpm 意味着约 8 个并发；上游一慢到 50 秒，**同样的 qpm 变成 16 个并发** ——
+限流值没动，系统压力翻倍。用频率间接控并发，等于假设耗时恒定，而耗时由上游决定，必然漂移。
+
+所以两条维度都要有，各管一段：
+
+| 维度 | 管什么 | 典型值 |
 |---|---|---|
-| `POST /api/interviews/analyze/{id}` | 10 | 烧 token 的重接口 |
-| `POST /api/interviews/agent-analyze/{id}` | 10 | 工具调用 + 分析，更重 |
-| `GET /api/interviews/{id}/analysis-stream` | 10 | SSE 流式烧 token |
-| `POST /api/mock/start` | 5 | 出题 + 单场耗时长，限最严 |
-| `POST /api/mock/answer` | 20 | 每题都调，频率高，限放宽 |
-| `POST /api/mock/{id}/finish` | 10 | 汇总烧 token |
+| `qpm` | 防脚本刷接口（粗筛） | 20~60，可以放宽 |
+| `max-in-flight` | **保护线程池/连接池** | 1~2，宁严勿松 |
+| `global-qpm` / `global-in-flight` | 保护总容量 | 全局在飞 32 |
+
+### 标注的接口与配额（阈值外置在 `app.ratelimit.rules`）
+
+| 接口 | qpm | max-in-flight | 理由 |
+|---|---|---|---|
+| `POST /api/interviews/analyze/{id}` | 20 | 2 | 烧 token 的重接口，一次几十秒 |
+| `POST /api/interviews/agent-analyze/{id}` | 10 | 1 | 工具调用 + 分析，更重 |
+| `GET /api/interviews/{id}/analysis-stream` | 10 | 2 | SSE 流式烧 token |
+| `POST /api/mock/start` | 5 | 1 | 出题 + 单场耗时长，限最严 |
+| `POST /api/mock/answer` | 20 | 2 | 每题都调，频率高，限放宽 |
+| `POST /api/mock/{id}/finish` | 10 | 1 | 汇总烧 token |
+| `POST /api/auth/login` | 20 | — | 挡口令爆破（未登录共用 `anonymous` 维度） |
+| `POST /api/auth/register` | 5 | — | 挡批量注册 |
 
 未标注的接口（录入 / 列表 / 详情 / 知识库 CRUD）不限流 —— 它们不调模型。
 
-### 实测（真实 Redis 容器）
+阈值**不写在注解上**（`@RateLimit` 无参，四个维度默认 `-1` = 取配置），改限流不用改代码发版；
+注解上写值只用于少数需要显式覆盖的场合。
 
-连发 12 次 `analyze`（qpm=10，窗口内已有自检留下的 1 次）：
+### 实测：频率维度感知不到并发压力
+
+同用户并发 4 次 `analyze`（qpm=20、`max-in-flight=2`，即窗口内远未到 20 次）：
 
 ```
-第 1-9 次:  HTTP 200（通过）
-第 10-12 次: HTTP 429（拒绝，提示「请求过于频繁，每分钟限 10 次」）
-
-指标:
-  app_ratelimit_total{result="allowed"} 17
-  app_ratelimit_total{result="denied"}  3
-  app_ratelimit_total{result="error"}   0
+record 2 -> HTTP 200
+record 4 -> HTTP 200
+record 3 -> HTTP 429（你同时进行的请求太多（上限 2 个））
+record 5 -> HTTP 429
 ```
 
-同时验证维度隔离：连发 3 次 `GET /api/interviews`（未标注 @RateLimit）全部 200，不受 analyze 限流影响。
+4 次请求离 20 qpm 差得远，频率维度一个都没拦 —— **挡住过载的是并发维度**。
+这正是「只限频率」的盲区：挡不住几个长耗时请求同时堆积。
 
 ### 关闭与配置
 
@@ -805,8 +846,16 @@ LLM 调用按 token 收费且有速率限制，**限流是成本控制的最后�
 # 关闭限流（单机调试）
 RATELIMIT_ENABLED=false ./run.sh
 
-# 调整全局默认 qpm（@RateLimit 注解可按方法覆盖）
-RATELIMIT_QPM=60 ./run.sh
+# 默认值（未命中 rules 时生效）
+RATELIMIT_QPM=60 RATELIMIT_MAX_IN_FLIGHT=2 \
+RATELIMIT_GLOBAL_IN_FLIGHT=32 ./run.sh
+```
+
+按方法定制在 `application.yml` 的 `app.ratelimit.rules` 里，键是「类短名.方法名」：
+
+```yaml
+rules:
+  InterviewController.analyze: {qpm: 20, max-in-flight: 2}
 ```
 
 ---
@@ -1093,6 +1142,56 @@ L4 的 `vec` 中位 **73%**，比正样本的 62% 还高 —— 它是「**用�
 ```bash
 RAG_GATE_ENABLED=false ./run.sh    # 关掉判定，报告里不再标注覆盖度
 ```
+
+---
+
+## 2.18 容量与瓶颈（QPS 天花板在哪）
+
+这一节回答「用户量上来会先死在哪」。结论：**不在 CPU，不在 Tomcat，不在线程池大小，
+而在三个没人碰过的默认值 —— MQ 消费者并发 1、数据库连接池 10、上游无超时。**
+
+### 各层额度与折算上限（按单次分析 25 秒估，耗时需实测修正）
+
+| 层 | 配置来源 | 值 | 折算上限 |
+|---|---|---|---|
+| Tomcat 线程 | 未配 → Boot 默认 200 | 200 | ~8 QPS（从未触及，不是瓶颈） |
+| 业务库连接池 | 未配 → Hikari 默认 10 | **10** | **0.4 QPS** |
+| 向量库连接池 | `VectorStoreConfig` 显式 5 | 5 | 非瓶颈 |
+| MQ 消费者并发 | 未配 → Spring AMQP 默认 | **1** | **0.04 QPS（最短板）** |
+| 上游 LLM 超时 | 无任何配置 | 无限 | 唯一能把系统从「慢」拖到「死」的点 |
+
+### 三个根因
+
+**① 事务包着 LLM 调用** —— `analyze` / `mock start` / `mock answer` / `mock finish` 原先都带
+`@Transactional`，20~40 秒的模型等待全程占着数据库连接。默认 10 个连接 → 十来个并发就见底，
+后续请求全部卡在 `getConnection()` 上直到 30 秒超时。
+
+> 改法：拆成「读事务 → 无事务跑模型 → 写事务」三段。
+> 注意事务方法不能是同类私有方法上的 `@Transactional`（Spring AOP 自调用不生效），
+> 改用 `TransactionTemplate` 显式划边界。
+
+**② MQ 消费者并发 = 1** —— 异步化本该提吞吐，却因默认值成了全项目最短板，比同步通道还慢 10 倍。
+配套必须改 `prefetch`，理由见 2.11。
+
+**③ 上游无超时** —— 前两个瓶颈是「慢」，这个是「死」：上游挂起 → 线程与连接永久占用，不会自愈。
+
+### 已做的优化
+
+| 改动 | 效果 |
+|---|---|
+| 拆事务（模型调用移出事务） | 数据库连接占用从「几十秒」降到「毫秒级」，容量不再是 0.4 QPS |
+| MQ `concurrency=4~16` + `prefetch=4` | 异步通道 0.04 QPS → 0.6~2.6 QPS |
+| Hikari 显式配置（30 连接 / 5s 快速失败） | 不再吃默认值；拿不到连接早点报错而不是全员干等 |
+| LLM 同步调用 60s 超时（虚拟线程 + `Future.get`） | 上游挂起最多占用 60 秒后返回 504，资源归还 |
+| 限流加并发维度与全局维度 | 直接限「同时在跑几个」，不因耗时漂移而失灵 |
+| 线程池拒绝策略 `CallerRuns` → `Abort` | 过载快速失败，不再把分析压到 HTTP 线程上 |
+
+### 还没做的
+
+- `annotateNoteCoverage` 对每道错题串行调一次 embedding（N+1 次），应改并行或批量
+- 上游熔断（连续失败 N 次后短路），目前只有超时没有熔断
+- 水平扩展：应用本身已无状态（JWT + Redis + MQ），加实例即可 —— 但必须先修完上面这些，
+  否则加多少实例都堵在同一个并发 1 上
 
 ---
 

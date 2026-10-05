@@ -22,12 +22,17 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Flux;
 
@@ -65,6 +70,9 @@ public class AnalysisServiceImpl implements AnalysisService {
 
     private static final String PROMPT_VERSION = "v1";
 
+    /** 单道错题的覆盖度判定超时（毫秒）—— 不该让一道题的检索拖垮整份报告 */
+    private static final long COVERAGE_TIMEOUT_MS = 15_000L;
+
     private final InterviewRecordRepository recordRepository;
     private final InterviewAnalysisRepository analysisRepository;
     private final LlmService llmService;
@@ -73,14 +81,24 @@ public class AnalysisServiceImpl implements AnalysisService {
     private final ObjectMapper objectMapper;
     private final ObjectProvider<CacheService> cacheProvider;
     private final UserContext userContext;
+    private final TransactionTemplate roTransactionTemplate;
+    private final TransactionTemplate rwTransactionTemplate;
 
+    /**
+     * 分析主流程。刻意拆成三段，事务边界只包含「读」和「写」两步毫秒级动作：
+     *
+     * <pre>
+     *   [事务1 只读] 加载记录      ← 毫秒级，加载完立刻归还连接
+     *   [无事务]     检索 + 模型调用 ← 20~40 秒，绝不占连接
+     *   [事务2 读写] 落库           ← 毫秒级
+     * </pre>
+     *
+     * <p>改之前 LLM 调用被包在事务里：连接被空转占用几十秒，默认 10 个连接的池子
+     * 十来个并发就见底，后面所有请求卡在 {@code getConnection()} 上直到 30 秒超时。
+     */
     @Override
-    @Transactional
     public AnalysisReport analyze(Long recordId) {
-        InterviewRecord record = loadRecordWithQuestions(recordId);
-        if (record.getQuestions() == null || record.getQuestions().isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该记录没有任何题目，无法分析");
-        }
+        InterviewRecord record = loadForAnalysis(recordId);
 
         CacheService cache = cacheProvider.getIfAvailable();
         String cacheKey = analysisCacheKey(record);
@@ -98,13 +116,42 @@ public class AnalysisServiceImpl implements AnalysisService {
                 SYSTEM_PROMPT, buildUserPrompt(record),
                 AnalysisReport.class, () -> heuristic(record));
 
-        persistWeakPoints(record, report);
-        saveAnalysis(record, report);
+        persistReport(recordId, report);
         annotateNoteCoverage(record, report);
         if (cache != null) {
             cache.put(cacheKey, report);
         }
         return report;
+    }
+
+    /**
+     * 事务只包「加载」。
+     *
+     * <p>{@code getQuestions().size()} 不是废话：uid 为空的分支走的是 {@code findById}，
+     * 没有 {@code @EntityGraph}，集合是懒加载的 —— 不在这里触碰一次，
+     * 脱离事务后 buildUserPrompt 遍历 questions 就会抛 LazyInitializationException。
+     */
+    private InterviewRecord loadForAnalysis(Long recordId) {
+        return roTransactionTemplate.execute(status -> {
+            InterviewRecord record = loadRecordWithQuestions(recordId);
+            if (record.getQuestions() == null || record.getQuestions().isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该记录没有任何题目，无法分析");
+            }
+            record.getQuestions().size();
+            return record;
+        });
+    }
+
+    /**
+     * 事务只包「写入」。重新查询实体而不是复用上面的 detached 对象：
+     * detached 实体上的修改不会被 flush，直接 save 还可能把旧状态覆盖回去。
+     */
+    private void persistReport(Long recordId, AnalysisReport report) {
+        rwTransactionTemplate.executeWithoutResult(status -> {
+            InterviewRecord record = loadRecordWithQuestions(recordId);
+            persistWeakPoints(record, report);
+            saveAnalysis(record, report);
+        });
     }
 
     /**
@@ -121,19 +168,38 @@ public class AnalysisServiceImpl implements AnalysisService {
      * 知识库不可用时静默跳过（noteSupported 留 null），绝不因此让分析失败。
      */
     private void annotateNoteCoverage(InterviewRecord record, AnalysisReport report) {
-        if (report.getWeakQuestions() == null || report.getWeakQuestions().isEmpty()) {
+        List<AnalysisReport.QuestionReview> reviews = report.getWeakQuestions();
+        if (reviews == null || reviews.isEmpty()) {
             return;
         }
-        for (AnalysisReport.QuestionReview review : report.getWeakQuestions()) {
-            if (review.getQuestion() == null || review.getQuestion().isBlank()) {
-                continue;
+        // 每道错题一次检索：串行的话总耗时随错题数线性增长（8 道错题 = 8 次 embedding 依次排队）。
+        // 这些检索彼此独立、且知识库查询不依赖当前用户上下文，可以安全并行 ——
+        // 用虚拟线程跑，墙钟时间从「N × 单次」降到约等于「单次」。
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<?>> futures = new ArrayList<>();
+            for (AnalysisReport.QuestionReview review : reviews) {
+                if (review.getQuestion() == null || review.getQuestion().isBlank()) {
+                    continue;
+                }
+                futures.add(pool.submit(() -> {
+                    try {
+                        RetrievalResult r = knowledgeService.retrieveWithSignals(
+                                coverageQuery(record, review.getQuestion()), 3);
+                        review.setNoteSupported(r.isConfident());
+                        review.setNoteHint(noteHint(r));
+                    } catch (Exception e) {
+                        log.warn("笔记覆盖度判定失败，该题不标注：{}", e.getMessage());
+                    }
+                }));
             }
-            try {
-                RetrievalResult r = knowledgeService.retrieveWithSignals(coverageQuery(record, review.getQuestion()), 3);
-                review.setNoteSupported(r.isConfident());
-                review.setNoteHint(noteHint(r));
-            } catch (Exception e) {
-                log.warn("笔记覆盖度判定失败，该题不标注：{}", e.getMessage());
+            for (Future<?> f : futures) {
+                try {
+                    f.get(COVERAGE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                } catch (Exception e) {
+                    // 单题判定不该拖垮整份报告：超时就取消，该题 noteSupported 保持 null
+                    f.cancel(true);
+                    log.warn("笔记覆盖度判定超时，该题不标注：{}", e.toString());
+                }
             }
         }
     }
@@ -223,10 +289,7 @@ public class AnalysisServiceImpl implements AnalysisService {
 
     @Override
     public Flux<String> streamAnalysis(Long recordId) {
-        InterviewRecord record = loadRecordWithQuestions(recordId);
-        if (record.getQuestions() == null || record.getQuestions().isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该记录没有任何题目，无法分析");
-        }
+        InterviewRecord record = loadForAnalysis(recordId);
         return llmService.stream(STREAM_SYSTEM_PROMPT, buildUserPrompt(record));
     }
 

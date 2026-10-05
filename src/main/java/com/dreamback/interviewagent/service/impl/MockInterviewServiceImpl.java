@@ -20,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 /** 模拟面试实现（出题 → 作答 → 打分 → 追问 → 汇总）。详见 {@link MockInterviewService}。 */
@@ -61,108 +62,133 @@ public class MockInterviewServiceImpl implements MockInterviewService {
     private final MockSessionRepository sessionRepository;
     private final MockTurnRepository turnRepository;
     private final UserContext userContext;
+    private final TransactionTemplate roTransactionTemplate;
+    private final TransactionTemplate rwTransactionTemplate;
+
+    /** 作答上下文：只读事务里取出来，供事务外的模型调用使用 */
+    private record TurnContext(Long sessionId, String jd, String question, long answeredTimes) {}
+
+    /** 汇总上下文：同上，stub 兜底分支还要用到原始 turns */
+    private record DialogContext(String jd, String dialog, List<MockTurn> turns) {}
 
     @Override
-    @Transactional
     public MockStartResponse start(MockStartRequest req) {
         String userPrompt = "目标 JD：\n" + req.getJd()
                 + "\n\n需要生成 " + req.getCount() + " 道题。"
                 + (req.getFocus() == null || req.getFocus().isBlank() ? "" : "\n重点考察方向：" + req.getFocus());
+        // 出题不依赖库里的数据 —— 直接放在事务外，这一步 20 秒以上
         MockQuestionSet set = llmService.structured(
                 QUESTION_SYSTEM_PROMPT, userPrompt, MockQuestionSet.class, () -> heuristic(req));
+        List<MockQuestionSet.MockQuestion> questions =
+                set.getQuestions() == null ? List.of() : set.getQuestions();
 
-        MockSession session = new MockSession();
-        session.setTargetJd(req.getJd());
-        session.setFocus(req.getFocus());
-        session.setStatus(STATUS_ACTIVE);
-        session.setUserId(userContext.currentUserId().orElse(null));
-        MockSession saved = sessionRepository.save(session);
+        return rwTransactionTemplate.execute(status -> {
+            MockSession session = new MockSession();
+            session.setTargetJd(req.getJd());
+            session.setFocus(req.getFocus());
+            session.setStatus(STATUS_ACTIVE);
+            session.setUserId(userContext.currentUserId().orElse(null));
+            MockSession saved = sessionRepository.save(session);
 
-        for (int i = 0; i < set.getQuestions().size(); i++) {
-            MockQuestionSet.MockQuestion q = set.getQuestions().get(i);
-            MockTurn t = new MockTurn();
-            t.setSession(saved);
-            t.setTurnIndex(i);
-            t.setRole(ROLE_INTERVIEWER);
-            t.setContent(q.getQuestion());
-            turnRepository.save(t);
-        }
+            for (int i = 0; i < questions.size(); i++) {
+                MockQuestionSet.MockQuestion q = questions.get(i);
+                MockTurn t = new MockTurn();
+                t.setSession(saved);
+                t.setTurnIndex(i);
+                t.setRole(ROLE_INTERVIEWER);
+                t.setContent(q.getQuestion());
+                turnRepository.save(t);
+            }
 
-        MockStartResponse resp = new MockStartResponse();
-        resp.setSessionId(saved.getId());
-        resp.getQuestions().addAll(set.getQuestions());
-        resp.setMessage("共 " + set.getQuestions().size() + " 题，逐题作答即可");
-        return resp;
+            MockStartResponse resp = new MockStartResponse();
+            resp.setSessionId(saved.getId());
+            resp.getQuestions().addAll(questions);
+            resp.setMessage("共 " + questions.size() + " 题，逐题作答即可");
+            return resp;
+        });
     }
 
     @Override
-    @Transactional
     public MockAnswerResult answer(MockAnswerRequest req) {
-        MockSession session = loadSession(req.getSessionId());
+        // [事务1 只读] 取出上下文，随后 LLM 打分（20 秒级）在事务外进行
+        TurnContext ctx = roTransactionTemplate.execute(status -> {
+            MockSession session = loadSession(req.getSessionId());
+            List<MockTurn> turns = turnRepository.findBySessionIdOrderByTurnIndexAscIdAsc(session.getId());
+            String question = currentQuestion(turns, req.getQuestionIndex());
+            long answeredTimes = turns.stream()
+                    .filter(t -> t.getTurnIndex() == req.getQuestionIndex() && ROLE_CANDIDATE.equals(t.getRole()))
+                    .count();
+            return new TurnContext(session.getId(), session.getTargetJd(), question, answeredTimes);
+        });
 
-        List<MockTurn> turns = turnRepository.findBySessionIdOrderByTurnIndexAscIdAsc(session.getId());
-        String question = currentQuestion(turns, req.getQuestionIndex());
-        long answeredTimes = turns.stream()
-                .filter(t -> t.getTurnIndex() == req.getQuestionIndex() && ROLE_CANDIDATE.equals(t.getRole()))
-                .count();
-
-        String userPrompt = "目标 JD：\n" + session.getTargetJd()
-                + "\n\n题目：" + question
-                + "\n\n候选人的回答（第 " + (answeredTimes + 1) + " 次回答本题）：\n" + req.getAnswer()
-                + (answeredTimes >= 2 ? "\n\n注意：这已经是本题第三次回答，必须结束本题，followUp 留空。" : "");
+        String userPrompt = "目标 JD：\n" + ctx.jd()
+                + "\n\n题目：" + ctx.question()
+                + "\n\n候选人的回答（第 " + (ctx.answeredTimes() + 1) + " 次回答本题）：\n" + req.getAnswer()
+                + (ctx.answeredTimes() >= 2 ? "\n\n注意：这已经是本题第三次回答，必须结束本题，followUp 留空。" : "");
 
         MockAnswerResult result = llmService.structured(
                 GRADE_SYSTEM_PROMPT, userPrompt, MockAnswerResult.class,
-                () -> heuristicGrade(req.getAnswer(), answeredTimes));
-
-        MockTurn answerTurn = new MockTurn();
-        answerTurn.setSession(session);
-        answerTurn.setTurnIndex(req.getQuestionIndex());
-        answerTurn.setRole(ROLE_CANDIDATE);
-        answerTurn.setContent(req.getAnswer());
-        answerTurn.setScore(result.getScore());
-        answerTurn.setFeedback(result.getFeedback());
-        turnRepository.save(answerTurn);
+                () -> heuristicGrade(req.getAnswer(), ctx.answeredTimes()));
 
         String followUp = result.getFollowUp() == null ? "" : result.getFollowUp().trim();
         result.setFollowUp(followUp);
         result.setFinished(followUp.isEmpty());
-        if (!followUp.isEmpty()) {
-            MockTurn fu = new MockTurn();
-            fu.setSession(session);
-            fu.setTurnIndex(req.getQuestionIndex());
-            fu.setRole(ROLE_INTERVIEWER);
-            fu.setContent(followUp);
-            turnRepository.save(fu);
-        }
+
+        // [事务2 读写] 只落库，重新加载会话以免 detached 实体上的修改丢失
+        rwTransactionTemplate.executeWithoutResult(status -> {
+            MockSession session = loadSession(req.getSessionId());
+            MockTurn answerTurn = new MockTurn();
+            answerTurn.setSession(session);
+            answerTurn.setTurnIndex(req.getQuestionIndex());
+            answerTurn.setRole(ROLE_CANDIDATE);
+            answerTurn.setContent(req.getAnswer());
+            answerTurn.setScore(result.getScore());
+            answerTurn.setFeedback(result.getFeedback());
+            turnRepository.save(answerTurn);
+
+            if (!followUp.isEmpty()) {
+                MockTurn fu = new MockTurn();
+                fu.setSession(session);
+                fu.setTurnIndex(req.getQuestionIndex());
+                fu.setRole(ROLE_INTERVIEWER);
+                fu.setContent(followUp);
+                turnRepository.save(fu);
+            }
+        });
         return result;
     }
 
     @Override
-    @Transactional
     public MockFinishResult finish(Long sessionId) {
-        MockSession session = loadSession(sessionId);
-        List<MockTurn> turns = turnRepository.findBySessionIdOrderByTurnIndexAscIdAsc(sessionId);
-
-        StringBuilder dialog = new StringBuilder();
-        for (MockTurn t : turns) {
-            dialog.append(ROLE_INTERVIEWER.equals(t.getRole()) ? "面试官：" : "候选人：")
-                    .append(t.getContent()).append('\n');
-            if (t.getScore() != null) {
-                dialog.append("（本轮得分 ").append(t.getScore()).append("）\n");
+        // [事务1 只读] 拼好对话文本就出来，汇总调用（20 秒级）不放事务里
+        DialogContext dc = roTransactionTemplate.execute(status -> {
+            MockSession session = loadSession(sessionId);
+            List<MockTurn> turns = turnRepository.findBySessionIdOrderByTurnIndexAscIdAsc(sessionId);
+            StringBuilder dialog = new StringBuilder();
+            for (MockTurn t : turns) {
+                dialog.append(ROLE_INTERVIEWER.equals(t.getRole()) ? "面试官：" : "候选人：")
+                        .append(t.getContent()).append('\n');
+                if (t.getScore() != null) {
+                    dialog.append("（本轮得分 ").append(t.getScore()).append("）\n");
+                }
             }
-        }
+            return new DialogContext(session.getTargetJd(), dialog.toString(), turns);
+        });
 
         MockFinishResult result = llmService.structured(
                 SUMMARY_SYSTEM_PROMPT,
-                "目标 JD：\n" + session.getTargetJd() + "\n\n完整对话：\n" + dialog,
+                "目标 JD：\n" + dc.jd() + "\n\n完整对话：\n" + dc.dialog(),
                 MockFinishResult.class,
-                () -> heuristicSummary(turns));
+                () -> heuristicSummary(dc.turns()));
 
-        session.setStatus(STATUS_FINISHED);
-        session.setTotalScore(result.getTotalScore());
-        session.setSummary(result.getComment());
-        sessionRepository.save(session);
+        // [事务2 读写] 只回写会话状态
+        rwTransactionTemplate.executeWithoutResult(status -> {
+            MockSession session = loadSession(sessionId);
+            session.setStatus(STATUS_FINISHED);
+            session.setTotalScore(result.getTotalScore());
+            session.setSummary(result.getComment());
+            sessionRepository.save(session);
+        });
         return result;
     }
 

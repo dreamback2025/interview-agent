@@ -25,20 +25,21 @@ public class MockController {
 
     private final MockInterviewService mockInterviewService;
 
+    // 阈值全部走 app.ratelimit.rules（按方法名匹配），不再写死在注解上
     @PostMapping("/start")
-    @RateLimit(qpm = 5)    // 出题烧 token 且单场耗时长，限最严
+    @RateLimit
     public MockStartResponse start(@Valid @RequestBody MockStartRequest req) {
         return mockInterviewService.start(req);
     }
 
     @PostMapping("/answer")
-    @RateLimit(qpm = 20)   // 每题都要调一次，频率高，限放宽
+    @RateLimit
     public MockAnswerResult answer(@Valid @RequestBody MockAnswerRequest req) {
         return mockInterviewService.answer(req);
     }
 
     @PostMapping("/{sessionId}/finish")
-    @RateLimit(qpm = 10)
+    @RateLimit
     public MockFinishResult finish(@PathVariable Long sessionId) {
         return mockInterviewService.finish(sessionId);
     }

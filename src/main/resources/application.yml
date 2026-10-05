@@ -1,5 +1,13 @@
 server:
   port: 8080
+  tomcat:
+    threads:
+      # 显式写出来，别吃默认值：这个数字要和「LLM 并发上限 × 平均耗时」对齐，
+      # 太小会平白拒绝请求，太大则会把上游和数据库连接池一起压垮。
+      max: ${TOMCAT_MAX_THREADS:200}
+      min-spare: ${TOMCAT_MIN_SPARE:20}
+    # 队列满后直接拒绝连接，而不是让请求无限排队
+    accept-count: ${TOMCAT_ACCEPT_COUNT:100}
 
 spring:
   application:
@@ -11,6 +19,17 @@ spring:
     driver-class-name: org.h2.Driver
     username: sa
     password: ""
+    # 连接池必须显式配置：默认只有 10 个连接，而分析接口一次要跑几十秒，
+    # 十来个并发就能把池子抽干，后续请求全部卡在 getConnection() 上。
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX:30}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      # 拿不到连接时快速失败（默认 30s 太长了）：与其让所有请求一起干等半分钟，
+      # 不如早点返回错误，把容量留给已经进来的请求。
+      connection-timeout: ${DB_CONN_TIMEOUT_MS:5000}
+      validation-timeout: 3000
+      idle-timeout: 600000
+      max-lifetime: 1200000
   jpa:
     hibernate:
       ddl-auto: update
@@ -29,6 +48,16 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USER:guest}
     password: ${RABBITMQ_PASSWORD:guest}
+    listener:
+      simple:
+        # 消费者并发默认是 1 —— 意味着异步分析通道的吞吐被钉死在「一次一个」，
+        # 比同步接口还慢一个数量级。这里放开到 4~16。
+        concurrency: ${MQ_CONSUMER_MIN:4}
+        max-concurrency: ${MQ_CONSUMER_MAX:16}
+        # ⚠️ prefetch 必须跟着 concurrency 一起改：默认 250 会让第一个消费者
+        # 一口气把 250 条消息抓进本地内存，其余消费者无活可干，扩容等于没扩。
+        # 取值 ≈ 单消费者并发上限（每个消费者手上有几条在飞）。
+        prefetch: ${MQ_PREFETCH:4}
 
   # DeepSeek（OpenAI 协议兼容）
   ai:
@@ -68,6 +97,9 @@ app:
   llm:
     # 显式强制离线桩模式（未配置 Key 时也会自动降级）
     stub: ${LLM_STUB:false}
+    # 同步调用的等待上限。Spring AI 默认没有读超时，上游挂起会永久占住线程与连接，
+    # 这是唯一能把系统从「慢」拖到「死」的路径。超时后返回 504。
+    timeout-ms: ${LLM_TIMEOUT_MS:60000}
   jd:
     # JD 提炼用的技术关键词（原先硬编码在 InterviewTools 里的 TECH_KEYWORDS）。
     # 留空也不会失效 —— 会退化为「知识库标签」这个动态来源；两者都为空时才切分职责短语。
@@ -135,9 +167,30 @@ app:
     mode: ${ASYNC_MODE:mq}
     queue: ${ASYNC_QUEUE:analysis.task.queue}
   ratelimit:
-    # 按用户维度限流，保护模型配额与成本（Redis 不可用时自动降级放行）
+    # 按用户维度限流。Redis 不可用时各维度自动降级放行（限流挂了不该让用户用不了功能）
     enabled: ${RATELIMIT_ENABLED:true}
-    qpm: ${RATELIMIT_QPM:60}
+    # 阈值外置：调限流不用改代码重新发版。
+    #   defaults —— 兜底规则；rules —— 按「类短名.方法名」精确覆盖
+    #   max-in-flight 是「同时在飞数」，比 qpm 更能保护线程池/连接池：
+    #   qpm 限的是速率，而真正占资源的是同时在跑的数量，耗时一变速率的含义就变了。
+    defaults:
+      qpm: ${RATELIMIT_QPM:60}
+      max-in-flight: ${RATELIMIT_MAX_IN_FLIGHT:2}
+      global-qpm: ${RATELIMIT_GLOBAL_QPM:0}
+      global-in-flight: ${RATELIMIT_GLOBAL_IN_FLIGHT:32}
+    rules:
+      # 分析最重（一次几十秒），单用户并发压到 2
+      InterviewController.analyze: {qpm: 20, max-in-flight: 2}
+      # Agent 版要跑多轮工具调用，更重
+      InterviewController.agentAnalyze: {qpm: 10, max-in-flight: 1}
+      InterviewController.analysisStream: {qpm: 10, max-in-flight: 2}
+      MockController.start: {qpm: 5, max-in-flight: 1}
+      MockController.answer: {qpm: 20, max-in-flight: 2}
+      MockController.finish: {qpm: 10, max-in-flight: 1}
+      # 登录/注册：未登录用户共用 anonymous 维度（等效全局），挡住口令爆破。
+      # 多人同时注册的场景会互相挤 —— 正式部署应改成按 IP 维度。
+      AuthController.login: {qpm: 20, max-in-flight: 0}
+      AuthController.register: {qpm: 5, max-in-flight: 0}
 
 management:
   endpoints:

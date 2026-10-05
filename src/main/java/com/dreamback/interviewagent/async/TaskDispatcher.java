@@ -6,6 +6,7 @@ import com.dreamback.interviewagent.repository.AnalysisTaskRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.AmqpTemplate;
 import org.springframework.beans.factory.ObjectProvider;
@@ -36,6 +37,7 @@ public class TaskDispatcher {
     private final Counter mqCounter;
     private final Counter poolCounter;
     private final Counter fallbackCounter;
+    private final Counter rejectedCounter;
 
     @Value("${app.async.mode:mq}")
     private String mode;
@@ -55,6 +57,7 @@ public class TaskDispatcher {
         this.mqCounter = Counter.builder("app.task.dispatched").tag("channel", "mq").register(registry);
         this.poolCounter = Counter.builder("app.task.dispatched").tag("channel", "pool").register(registry);
         this.fallbackCounter = Counter.builder("app.task.dispatched").tag("channel", "mq_fallback").register(registry);
+        this.rejectedCounter = Counter.builder("app.task.dispatched").tag("channel", "pool_rejected").register(registry);
     }
 
     public AnalysisTask submit(Long recordId, Long userId) {
@@ -105,8 +108,16 @@ public class TaskDispatcher {
                 log.warn("MQ 投递失败，降级为本地线程池执行：{}", e.toString());
             }
         }
-        pool.execute(() -> executor.execute(taskId));
-        poolCounter.increment();
-        return "pool";
+        try {
+            pool.execute(() -> executor.execute(taskId));
+            poolCounter.increment();
+            return "pool";
+        } catch (RejectedExecutionException e) {
+            // 任务在投递前已落库为 PENDING，被拒绝不等于丢失 —— 保持 PENDING，交给补偿扫描重投。
+            // 这里绝不能退化成「让提交线程自己跑」，那会把几十秒的分析压到 HTTP 请求线程上。
+            rejectedCounter.increment();
+            log.warn("本地线程池已满，任务保持 PENDING 等待补偿：taskId={}", taskId);
+            return "pool_rejected";
+        }
     }
 }

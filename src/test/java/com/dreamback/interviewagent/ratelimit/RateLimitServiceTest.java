@@ -11,6 +11,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 
 class RateLimitServiceTest {
 
@@ -93,5 +94,42 @@ class RateLimitServiceTest {
         RateLimitService svc = new RateLimitService(provider, registry);
         // 边界：免鉴权模式下 dimension 可能含 "anonymous"，逻辑应正常
         assertThat(svc.tryAcquire("anonymous:analyze", 60)).isTrue();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void 并发维度_超上限拒绝_释放后又能进入() {
+        ObjectProvider<StringRedisTemplate> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(null);   // 无 Redis → 走本机计数
+
+        RateLimitService svc = new RateLimitService(provider, registry);
+        String t1 = svc.enter("u1:analyze", 2);
+        String t2 = svc.enter("u1:analyze", 2);
+        assertThat(t1).isNotNull();
+        assertThat(t2).isNotNull();
+        // 第三个被挡住：这正是频率限流做不到的 —— 一分钟三次远没到 qpm 上限，
+        // 但同时在跑的已经超了
+        assertThat(svc.enter("u1:analyze", 2)).isNull();
+
+        svc.leave("u1:analyze", t1);
+        assertThat(svc.enter("u1:analyze", 2)).isNotNull();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void 并发维度_redis可用时以lua结果为准() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        when(redis.execute(any(), anyList(), any(Object[].class))).thenReturn(1L, 0L);
+        when(redis.opsForZSet()).thenReturn(mock(ZSetOperations.class));
+        ObjectProvider<StringRedisTemplate> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(redis);
+
+        RateLimitService svc = new RateLimitService(provider, registry);
+        String token = svc.enter("u1:analyze", 2);
+        assertThat(token).isNotNull();
+        svc.leave("u1:analyze", token);   // 释放走 ZREM，不应抛异常
+
+        assertThat(svc.enter("u1:analyze", 2)).isNull();
+        assertThat(registry.counter("app_ratelimit", "result", "inflight_denied").count()).isEqualTo(1.0);
     }
 }

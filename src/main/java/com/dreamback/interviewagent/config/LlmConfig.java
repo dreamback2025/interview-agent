@@ -18,7 +18,8 @@ public class LlmConfig {
     public LlmService llmService(ChatClient.Builder chatClientBuilder,
                                  @Value("${spring.ai.openai.api-key:}") String apiKey,
                                  @Value("${spring.ai.openai.chat.options.model:}") String model,
-                                 @Value("${app.llm.stub:false}") boolean forceStub) {
+                                 @Value("${app.llm.stub:false}") boolean forceStub,
+                                 @Value("${app.llm.timeout-ms:60000}") long timeoutMs) {
         boolean hasKey = StringUtils.hasText(apiKey) && !apiKey.startsWith("sk-placeholder");
         if (forceStub || !hasKey) {
             // 注意：环境变量被设置成空字符串时，Spring 不会回退到默认占位符，同样会走到这里
@@ -27,7 +28,7 @@ public class LlmConfig {
                     forceStub ? "app.llm.stub=true" : "未检测到可用 Key（为空或仍是占位符）");
             return new StubLlmService();
         }
-        log.info("LLM 模式 = deepseek（model={}）", model);
-        return new DeepSeekLlmService(chatClientBuilder.build());
+        log.info("LLM 模式 = deepseek（model={}, timeoutMs={}）", model, timeoutMs);
+        return new DeepSeekLlmService(chatClientBuilder.build(), timeoutMs);
     }
 }

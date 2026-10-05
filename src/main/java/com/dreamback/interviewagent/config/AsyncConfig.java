@@ -24,17 +24,21 @@ public class AsyncConfig {
     /**
      * 无 MQ 时的执行通道。
      *
-     * 拒绝策略用 CallerRunsPolicy：队列满了让提交线程自己跑，
-     * 相当于把压力原路还给调用方（HTTP 请求变慢），而不是静默丢任务 —— 这是一种背压。
+     * <p><b>拒绝策略从 CallerRunsPolicy 改成 AbortPolicy</b>：CallerRuns 让提交线程自己跑任务，
+     * 看起来是「不丢任务」，实际是把压力转嫁给调用方 —— 若是 HTTP 线程提交，用户请求会卡几十秒；
+     * 若是 MQ 消费者线程提交，整个消费就停摆。而任务本身已经落库为 PENDING，
+     * 拒绝不等于丢弃：TaskDispatcher 会捕获这次拒绝并保持 PENDING，交给补偿扫描重试。
+     * 宁可让调用方立刻知道「忙」，也不要让它在无感知的情况下等死。
      */
     @Bean
     public ThreadPoolTaskExecutor analysisPool() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(2);
         executor.setMaxPoolSize(4);
-        executor.setQueueCapacity(200);
+        // 有界且不宜过大：队列是「延迟」不是「吞吐」，攒 100 个任务 × 每个数十秒 = 用户等几十分钟
+        executor.setQueueCapacity(100);
         executor.setThreadNamePrefix("analysis-");
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
         // 把提交线程的 traceId 复制到执行线程，异步任务日志也能和请求关联
         executor.setTaskDecorator(new MdcTaskDecorator());
         executor.initialize();

@@ -4,6 +4,9 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -27,6 +30,7 @@ import org.springframework.stereotype.Component;
 public class RateLimitService {
 
     private static final DefaultRedisScript<Long> ACQUIRE;
+    private static final DefaultRedisScript<Long> ENTER;
 
     static {
         ACQUIRE = new DefaultRedisScript<>();
@@ -47,15 +51,47 @@ public class RateLimitService {
                 "return 1"
         );
         ACQUIRE.setResultType(Long.class);
+
+        // 「在飞数」计数：进入时登记一个 member，退出时删掉。
+        // 与滑动窗口的区别：窗口只关心「发生了多少次」，这里关心「现在还有多少没结束」。
+        ENTER = new DefaultRedisScript<>();
+        ENTER.setScriptText(
+                "local key = KEYS[1] " +
+                "local now = tonumber(ARGV[1]) " +
+                "local limit = tonumber(ARGV[2]) " +
+                "local member = ARGV[3] " +
+                "local stale = tonumber(ARGV[4]) " +
+                // 清掉「早就该结束却没被释放」的残留（进程被 kill、网络异常导致 finally 没跑到）
+                "redis.call('ZREMRANGEBYSCORE', key, 0, now - stale) " +
+                "local count = redis.call('ZCARD', key) " +
+                "if count >= limit then return 0 end " +
+                "redis.call('ZADD', key, now, member) " +
+                "redis.call('PEXPIRE', key, stale) " +
+                "return 1"
+        );
+        ENTER.setResultType(Long.class);
     }
 
     /** 窗口大小：60 秒（毫秒）—— 与 qpm「每分钟 N 次」对应 */
     private static final long WINDOW_MS = 60_000L;
 
+    /**
+     * 在飞项的「最长可能存活时间」：超过这个时间还没被释放的，视为进程崩溃留下的残骸，直接清掉。
+     * 取值要大于单请求最长耗时（含 LLM 超时），否则会把正常请求误判成残骸。
+     */
+    private static final long INFLIGHT_STALE_MS = 600_000L;
+
+    /** 本机兜底令牌的前缀：用来区分「该走 Redis 删」还是「该走本地减」 */
+    private static final String LOCAL_PREFIX = "local:";
+
+    /** Redis 不可用时的本地兜底计数（单机部署仍能保住并发约束） */
+    private final ConcurrentMap<String, AtomicInteger> localInFlight = new ConcurrentHashMap<>();
+
     private final ObjectProvider<StringRedisTemplate> redisProvider;
     private final Counter allowedCounter;
     private final Counter deniedCounter;
     private final Counter errorCounter;
+    private final Counter inFlightDeniedCounter;
 
     public RateLimitService(ObjectProvider<StringRedisTemplate> redisProvider,
                             MeterRegistry registry) {
@@ -63,6 +99,7 @@ public class RateLimitService {
         this.allowedCounter = Counter.builder("app_ratelimit").tag("result", "allowed").register(registry);
         this.deniedCounter = Counter.builder("app_ratelimit").tag("result", "denied").register(registry);
         this.errorCounter = Counter.builder("app_ratelimit").tag("result", "error").register(registry);
+        this.inFlightDeniedCounter = Counter.builder("app_ratelimit").tag("result", "inflight_denied").register(registry);
     }
 
     /**
@@ -102,5 +139,84 @@ public class RateLimitService {
             log.warn("限流检查失败，本次放行：{}", e.getMessage());
             return true;
         }
+    }
+
+    /**
+     * 进入「在飞」计数 —— 记录的是「现在还有几个没结束」，而不是「一分钟来了几个」。
+     *
+     * <p>为什么单独要这个维度：频率限制挡不住长耗时请求堆积。qpm=10、每次 25 秒，
+     * 稳态就是 4 个并发；上游一慢到 50 秒，同样的 qpm 变成 8 个并发 —— 限流值没变，
+     * 系统压力却翻倍。直接限在飞数，才不会因为耗时漂移而失灵。
+     *
+     * @param dimension 维度（如 "u5:analyze" / "global:analyze"）
+     * @param limit     同时在飞上限
+     * @return 令牌，需配合 {@link #leave} 在 finally 里释放；被限流时返回 null
+     */
+    public String enter(String dimension, int limit) {
+        String token = UUID.randomUUID().toString();
+        StringRedisTemplate redis = redisProvider.getIfAvailable();
+        if (redis == null) {
+            return enterLocal(dimension, limit, token);
+        }
+        try {
+            Long ok = redis.execute(
+                    ENTER,
+                    List.of("inflight:" + dimension),
+                    String.valueOf(System.currentTimeMillis()),
+                    String.valueOf(limit),
+                    token,
+                    String.valueOf(INFLIGHT_STALE_MS));
+            if (ok != null && ok == 1L) {
+                allowedCounter.increment();
+                return token;
+            }
+            inFlightDeniedCounter.increment();
+            log.warn("并发限流触发：dimension={} limit={}（已有这么多请求在跑）", dimension, limit);
+            return null;
+        } catch (Exception e) {
+            // Redis 挂了不能因此拒绝请求，退化成本机计数（单机部署仍然有效）
+            errorCounter.increment();
+            log.warn("并发限流检查失败，降级为本机计数：{}", e.getMessage());
+            return enterLocal(dimension, limit, token);
+        }
+    }
+
+    /** 释放一个在飞名额。必须在 finally 里调用，否则名额会一直占到 STALE 时间后被自动清理。 */
+    public void leave(String dimension, String token) {
+        if (token == null) {
+            return;
+        }
+        if (token.startsWith(LOCAL_PREFIX)) {
+            leaveLocal(dimension);
+            return;
+        }
+        StringRedisTemplate redis = redisProvider.getIfAvailable();
+        if (redis == null) {
+            return;
+        }
+        try {
+            redis.opsForZSet().remove("inflight:" + dimension, token);
+        } catch (Exception e) {
+            // 释放失败不致命：残骸最多存活 INFLIGHT_STALE_MS，之后被 Lua 自动清掉
+            log.warn("释放并发计数失败（残骸最多 {}s 后自动清理）：{}", INFLIGHT_STALE_MS / 1000, e.getMessage());
+        }
+    }
+
+    private String enterLocal(String dimension, int limit, String token) {
+        AtomicInteger counter = localInFlight.computeIfAbsent(dimension, k -> new AtomicInteger());
+        if (counter.incrementAndGet() > limit) {
+            counter.decrementAndGet();
+            inFlightDeniedCounter.increment();
+            log.warn("并发限流触发（本机计数）：dimension={} limit={}", dimension, limit);
+            return null;
+        }
+        return LOCAL_PREFIX + token;
+    }
+
+    private void leaveLocal(String dimension) {
+        localInFlight.computeIfPresent(dimension, (k, c) -> {
+            c.decrementAndGet();
+            return c;
+        });
     }
 }

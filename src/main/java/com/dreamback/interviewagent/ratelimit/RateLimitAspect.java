@@ -29,19 +29,65 @@ public class RateLimitAspect {
 
     private final RateLimitService rateLimitService;
     private final UserContext userContext;
+    private final RateLimitProperties properties;
 
     @Around("@annotation(rateLimit)")
     public Object around(ProceedingJoinPoint pjp, RateLimit rateLimit) throws Throwable {
-        // 维度：用户 + 类短名 + 方法名。同用户调不同接口各算各的
         Long uid = userContext.currentUserId().orElse(null);
         String userKey = uid == null ? "anonymous" : "u" + uid;
         String method = pjp.getSignature().getDeclaringType().getSimpleName() + "." + pjp.getSignature().getName();
-        String dimension = userKey + ":" + method;
+        String userDim = userKey + ":" + method;
+        String globalDim = "global:" + method;
 
-        if (!rateLimitService.tryAcquire(dimension, rateLimit.qpm())) {
-            throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
-                    "请求过于频繁，每分钟限 " + rateLimit.qpm() + " 次，请稍后再试");
+        RateLimitProperties.Rule rule = properties.ruleFor(method);
+        int qpm = pick(rateLimit.qpm(), rule.getQpm());
+        int maxInFlight = pick(rateLimit.maxInFlight(), rule.getMaxInFlight());
+        int globalQpm = pick(rateLimit.globalQpm(), rule.getGlobalQpm());
+        int globalInFlight = pick(rateLimit.globalInFlight(), rule.getGlobalInFlight());
+
+        // ① 频率维度：全局优先。只有 per-user 是不够的 —— 每个用户都没超限，
+        //    十个用户叠起来照样能把容量打穿。
+        if (globalQpm > 0 && !rateLimitService.tryAcquire(globalDim, globalQpm)) {
+            throw tooMany("系统繁忙，请稍后再试");
         }
-        return pjp.proceed();
+        if (qpm > 0 && !rateLimitService.tryAcquire(userDim, qpm)) {
+            throw tooMany("请求过于频繁，每分钟限 " + qpm + " 次，请稍后再试");
+        }
+
+        // ② 并发维度：这才是保护线程池/连接池的关键。拿到令牌后必须归还，见 finally。
+        String globalToken = globalInFlight > 0
+                ? rateLimitService.enter(globalDim, globalInFlight)
+                : null;
+        if (globalInFlight > 0 && globalToken == null) {
+            throw tooMany("系统繁忙，请稍后再试");
+        }
+        String userToken = null;
+        try {
+            if (maxInFlight > 0) {
+                userToken = rateLimitService.enter(userDim, maxInFlight);
+                if (userToken == null) {
+                    throw tooMany("你同时进行的请求太多（上限 " + maxInFlight
+                            + " 个），请等当前任务结束后再试");
+                }
+            }
+            return pjp.proceed();
+        } finally {
+            // 无论正常返回还是抛异常都要归还，否则名额会一直占到超时才被清理
+            if (userToken != null) {
+                rateLimitService.leave(userDim, userToken);
+            }
+            if (globalToken != null) {
+                rateLimitService.leave(globalDim, globalToken);
+            }
+        }
+    }
+
+    /** 注解上写死的值优先（-1 表示「听配置的」），这样既有默认值可配，也保留单点覆盖能力 */
+    private static int pick(int annotationValue, int configured) {
+        return annotationValue >= 0 ? annotationValue : configured;
+    }
+
+    private static ResponseStatusException tooMany(String reason) {
+        return new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, reason);
     }
 }

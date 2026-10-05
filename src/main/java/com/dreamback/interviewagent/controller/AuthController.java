@@ -3,6 +3,7 @@ package com.dreamback.interviewagent.controller;
 import com.dreamback.interviewagent.dto.AuthResponse;
 import com.dreamback.interviewagent.dto.LoginRequest;
 import com.dreamback.interviewagent.dto.RegisterRequest;
+import com.dreamback.interviewagent.ratelimit.RateLimit;
 import com.dreamback.interviewagent.security.UserContext;
 import com.dreamback.interviewagent.service.AuthService;
 import jakarta.validation.Valid;
@@ -27,11 +28,13 @@ public class AuthController {
 
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
+    @RateLimit   // 挡批量注册；阈值见 app.ratelimit.rules
     public AuthResponse register(@Valid @RequestBody RegisterRequest req) {
         return authService.register(req);
     }
 
     @PostMapping("/login")
+    @RateLimit   // 挡口令爆破；阈值见 app.ratelimit.rules
     public AuthResponse login(@Valid @RequestBody LoginRequest req) {
         return authService.login(req);
     }
