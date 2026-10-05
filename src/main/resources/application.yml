@@ -238,6 +238,15 @@ management:
   metrics:
     tags:
       application: ${spring.application.name}
+    distribution:
+      # ⚠️ 不开这个，Prometheus 里只有 count/sum/max —— 能算平均值，但算不出分位数。
+      # 耗时是长尾分布（上游偶尔抽风），均值会严重低估真实体验。
+      #   percentiles-histogram → 输出 le 分桶，跨实例可聚合：
+      #     histogram_quantile(0.95, sum(rate(llm_call_duration_seconds_bucket[5m])) by (le))
+      #   P50/P95 的直读值（quantile 标签）在 LlmMetricsAspect 里用 publishPercentiles 声明 ——
+      #   实测 management.metrics.distribution.percentiles 这个配置项对 Timer 不生效。
+      percentiles-histogram:
+        llm_call_duration: true
 
 logging:
   level:

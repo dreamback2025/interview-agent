@@ -46,6 +46,12 @@ public class LlmMetricsAspect {
             Timer.builder("llm_call_duration")
                     .tag("method", method)
                     .tag("result", result)
+                    // 客户端分位数：Prometheus 里直接出 quantile="0.95"，排查时不用手写 histogram_quantile。
+                    // ⚠️ 局限：客户端分位数不可跨实例聚合 —— 多实例部署要用 le 分桶
+                    //    （application.yml 里 percentiles-histogram 已开）+ histogram_quantile()。
+                    //    实测过：只靠 management.metrics.distribution.percentiles 配置不生效，
+                    //    必须在 builder 上显式声明。
+                    .publishPercentiles(0.5, 0.95)
                     .register(registry)
                     .record(Duration.ofMillis(ms));
             log.debug("LLM 调用耗时: method={} result={} {}ms", method, result, ms);
