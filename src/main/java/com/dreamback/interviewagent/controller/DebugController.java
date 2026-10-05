@@ -4,6 +4,7 @@ import com.dreamback.interviewagent.dto.RetrievalResult;
 import com.dreamback.interviewagent.repository.InterviewAnalysisRepository;
 import com.dreamback.interviewagent.repository.InterviewRecordRepository;
 import com.dreamback.interviewagent.repository.KnowledgeDocRepository;
+import com.dreamback.interviewagent.resilience.CircuitBreaker;
 import com.dreamback.interviewagent.security.UserContext;
 import com.dreamback.interviewagent.service.KnowledgeService;
 import com.dreamback.interviewagent.service.MemoryService;
@@ -32,6 +33,7 @@ public class DebugController {
     private final KnowledgeDocRepository docRepository;
     private final UserContext userContext;
     private final Environment environment;
+    private final CircuitBreaker llmCircuitBreaker;
 
     @GetMapping("/memory")
     public String memory(@RequestParam(required = false) Long excludeRecordId,
@@ -74,6 +76,26 @@ public class DebugController {
     public RetrievalResult retrieval(@RequestParam String q,
                                      @RequestParam(defaultValue = "5") int topK) {
         return knowledgeService.retrieveWithSignals(q, Math.min(Math.max(topK, 1), 20));
+    }
+
+    /**
+     * 上游熔断状态。
+     *
+     * <p><b>刻意不做成 HealthIndicator</b>：熔断开路说明「上游有问题」而不是「本实例有问题」，
+     * 若让 /actuator/health 变成 DOWN，K8s 会把所有实例一起重启 —— 上游故障反而演变成
+     * 全站重启。所以只在这里和 Prometheus 指标（llm_circuit_state）暴露。
+     */
+    @GetMapping("/circuit")
+    public Map<String, Object> circuit() {
+        CircuitBreaker.Snapshot s = llmCircuitBreaker.snapshot();
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("state", s.state().name());
+        m.put("windowMs", s.windowMs());
+        m.put("total", s.total());
+        m.put("failures", s.failures());
+        m.put("failureRatePercent", s.failureRatePercent());
+        m.put("retryAfterMs", s.retryAfterMs());
+        return m;
     }
 
     /** 去掉连接串里的账号密码，避免泄露 */

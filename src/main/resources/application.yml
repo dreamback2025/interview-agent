@@ -100,6 +100,31 @@ app:
     # 同步调用的等待上限。Spring AI 默认没有读超时，上游挂起会永久占住线程与连接，
     # 这是唯一能把系统从「慢」拖到「死」的路径。超时后返回 504。
     timeout-ms: ${LLM_TIMEOUT_MS:60000}
+    circuit:
+      # 上游熔断：超时管「单次最多等多久」，熔断管「这段时间干脆别调」。
+      # 上游故障的典型表现是所有请求都变慢 —— 只靠超时，每个请求仍会占满 60s 才释放，
+      # 用户重试又把新请求灌进来，最后所有槽位都在等一个已经死了的上游。
+      enabled: ${LLM_CB_ENABLED:true}
+      # 窗口内失败率超过这个值（百分比）才开路
+      failure-rate: ${LLM_CB_FAILURE_RATE:50}
+      # 最小样本数：只调了 1 次就失败，失败率是 100%，但不能因此开路。
+      # 取值越大越不容易误判，代价是故障时要多牺牲几个请求才触发保护。
+      min-samples: ${LLM_CB_MIN_SAMPLES:5}
+      # 连续失败这么多次就开路 —— 与失败率并列，任一路成立即开路。
+      # 为什么不能只靠失败率（实测教训）：上游不可达时每次要等满 60s 超时才失败，
+      # 若窗口长度小于单次耗时，下一次调用时窗口已被整个滑空，样本永远攒不够，
+      # 失败率统计彻底失效（实测连发 4 次全部各等 61s，一次都没开路）。
+      # 连续失败计数不受窗口滑动影响，专治这种「慢失败」。
+      consecutive-failures: ${LLM_CB_CONSECUTIVE:3}
+      # ⚠️ 窗口必须显著大于单次最大耗时（超时上限），否则统计会被自己的慢调用冲掉
+      window-ms: ${LLM_CB_WINDOW_MS:300000}
+      # 开路后等这么久才放探测请求
+      open-wait-ms: ${LLM_CB_OPEN_WAIT_MS:30000}
+      # 半开期放行几个探测请求。不能全放 —— 上游刚恢复就被瞬间打垮（雪崩）
+      half-open-permits: ${LLM_CB_HALF_OPEN_PERMITS:2}
+      # 开路时是否退回启发式结果（stubData）。默认 false：
+      # 悄悄返回低质量分析会让「分析成功」这个信号本身失去可信度，宁可显式报错。
+      fallback-heuristic: ${LLM_CB_FALLBACK:false}
   jd:
     # JD 提炼用的技术关键词（原先硬编码在 InterviewTools 里的 TECH_KEYWORDS）。
     # 留空也不会失效 —— 会退化为「知识库标签」这个动态来源；两者都为空时才切分职责短语。
@@ -166,6 +191,13 @@ app:
     enabled: ${ASYNC_ENABLED:true}
     mode: ${ASYNC_MODE:mq}
     queue: ${ASYNC_QUEUE:analysis.task.queue}
+    # 悬挂任务回收：任务可能因为实例崩溃 / 消息丢失 / 线程池拒绝而永远停在 PENDING。
+    # 没有这个扫描，前端会一直轮询一个不可能完成的任务。
+    # 阈值必须显著大于单次分析的最大耗时（模型超时 60s + 笔记检索），否则会误判正常执行的任务。
+    stuck-timeout-minutes: ${ASYNC_STUCK_MINUTES:10}
+    # 重投几次后放弃（claim 时 retryCount+1，所以这个值就是「最多执行几次」）
+    max-retry: ${ASYNC_MAX_RETRY:2}
+    reaper-interval-ms: ${ASYNC_REAPER_INTERVAL_MS:120000}
   ratelimit:
     # 按用户维度限流。Redis 不可用时各维度自动降级放行（限流挂了不该让用户用不了功能）
     enabled: ${RATELIMIT_ENABLED:true}

@@ -6,10 +6,14 @@ import org.springframework.amqp.core.Queue;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 /** 异步分析任务的线程池与消息队列声明。 */
 @Configuration
+// 悬挂任务回收（StuckTaskReaper）依赖定时调度：任务可能因为实例崩溃或消息丢失
+// 永远停在 PENDING，没有补偿机制前端就会一直轮询一个不可能完成的任务。
+@EnableScheduling
 public class AsyncConfig {
 
     /** 队列名，与投递/消费端保持一致 */

@@ -2,6 +2,7 @@ package com.dreamback.interviewagent.repository;
 
 import com.dreamback.interviewagent.entity.AnalysisTask;
 import com.dreamback.interviewagent.entity.TaskStatus;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -19,6 +20,14 @@ public interface AnalysisTaskRepository extends JpaRepository<AnalysisTask, Long
 
     /** 积压监控：还没结束的任务数 */
     long countByStatusIn(List<TaskStatus> statuses);
+
+    /**
+     * 悬挂任务扫描：处于这些状态、且最后更新时间早于 deadline 的任务。
+     *
+     * <p>PENDING 超时 = 消息丢了或还没被消费；RUNNING 超时 = 消费者中途挂了。
+     * 两种情况的共同点是「没人再会去推进它」，只能靠外部扫描补偿。
+     */
+    List<AnalysisTask> findByStatusInAndUpdatedAtBefore(List<TaskStatus> statuses, LocalDateTime deadline);
 
     /**
      * 条件更新：只有处于 from 状态才能迁移到 to 状态。
