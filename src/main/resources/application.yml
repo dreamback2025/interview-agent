@@ -161,6 +161,17 @@ app:
     dimensions: ${RAG_DIMENSIONS:1024}   # bge-m3 = 1024
     # ollama = 真实语义 embedding（bge-m3）；stub = 哈希兜底，不依赖 Ollama，仅用于验证链路
     embedding: ${RAG_EMBEDDING:ollama}
+    # embedding 缓存：向量是「模型 + 文本」的纯函数，重复分析/重复检索可直接复用
+    embedding-cache:
+      enabled: ${RAG_EMBED_CACHE_ENABLED:true}
+      # L1 进程内 LRU 上限。1024 维向量约 4KB/条，2000 条约 8MB
+      max-entries: ${RAG_EMBED_CACHE_MAX_ENTRIES:2000}
+      # L2 走 Redis，跨实例共享；Redis 不可用时自动只保留 L1
+      redis: ${RAG_EMBED_CACHE_REDIS:true}
+      # 远长于分析结果缓存（30m）：向量不会像报告那样随时间过期
+      ttl: ${RAG_EMBED_CACHE_TTL:7d}
+      # 留空时自动按「来源:模型名:维度」生成。换模型必须换 tag，否则旧向量污染新向量空间
+      model-tag: ${RAG_EMBED_MODEL_TAG:}
     hybrid:
       # 混合检索：向量语义 + 关键词（tsvector + GIN）+ RRF 融合。
       # 关键词通道不可用（业务库与向量库不同库）时自动退化为纯向量，不会让检索失败。

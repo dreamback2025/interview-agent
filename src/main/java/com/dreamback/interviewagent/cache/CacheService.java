@@ -82,6 +82,16 @@ public class CacheService {
     }
 
     public void put(String key, Object value) {
+        put(key, value, ttl);
+    }
+
+    /**
+     * 自定义 TTL 的写入。
+     *
+     * <p>embedding 缓存要用它：向量是「模型 + 文本」的纯函数，不像分析结果那样会过期，
+     * 给 30 分钟意味着每半小时就要重算一遍全部向量，缓存形同虚设。
+     */
+    public void put(String key, Object value, Duration ttl) {
         try {
             redis.opsForValue().set(key, objectMapper.writeValueAsString(value), ttl);
         } catch (Exception e) {

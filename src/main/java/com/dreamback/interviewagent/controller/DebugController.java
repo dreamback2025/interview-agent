@@ -1,5 +1,6 @@
 package com.dreamback.interviewagent.controller;
 
+import com.dreamback.interviewagent.config.EmbeddingConfig.EmbeddingCachePostProcessor;
 import com.dreamback.interviewagent.dto.RetrievalResult;
 import com.dreamback.interviewagent.repository.InterviewAnalysisRepository;
 import com.dreamback.interviewagent.repository.InterviewRecordRepository;
@@ -11,6 +12,7 @@ import com.dreamback.interviewagent.service.MemoryService;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.env.Environment;
@@ -34,6 +36,7 @@ public class DebugController {
     private final UserContext userContext;
     private final Environment environment;
     private final CircuitBreaker llmCircuitBreaker;
+    private final ObjectProvider<EmbeddingCachePostProcessor> embeddingCache;
 
     @GetMapping("/memory")
     public String memory(@RequestParam(required = false) Long excludeRecordId,
@@ -95,6 +98,24 @@ public class DebugController {
         m.put("failures", s.failures());
         m.put("failureRatePercent", s.failureRatePercent());
         m.put("retryAfterMs", s.retryAfterMs());
+        return m;
+    }
+
+    /**
+     * embedding 缓存命中率。
+     *
+     * <p>命中率是这个优化有没有生效的唯一证据：向量是纯函数，命中即省掉一次 Ollama 推理
+     * （CPU 密集，单次 50~200ms）。分析流程里每道错题都要检索一次笔记，
+     * 同一份记录反复分析时这里应该接近全命中。
+     */
+    @GetMapping("/embedding-cache")
+    public Map<String, Object> embeddingCacheStats() {
+        EmbeddingCachePostProcessor pp = embeddingCache.getIfAvailable();
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("enabled", pp != null && !pp.isEmpty());
+        if (pp != null) {
+            m.put("models", pp.stats());
+        }
         return m;
     }
 

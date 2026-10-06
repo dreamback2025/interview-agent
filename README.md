@@ -914,6 +914,7 @@ rules:
 | `app_cache_requests_total{result}` | `CacheService` | 缓存 hit/miss/error |
 | `app_task_dispatched_total{channel}` | `TaskDispatcher` | 异步任务投递 mq/pool/mq_fallback |
 | `app_task_finished_total{result}` | `TaskExecutor` | 异步任务 success/failure/skipped |
+| `app_embedding_cache_total{result}` | `CachingEmbeddingModel` | embedding 缓存 l1/l2/miss（见 2.20）|
 
 实测（stub 模式 + 真实 Redis/PG/Ollama）：
 
@@ -1236,8 +1237,11 @@ RAG_GATE_ENABLED=false ./run.sh    # 关掉判定，报告里不再标注覆盖�
 | 5 题 | 11.3s | 5.4s | 5.9s |
 | 8 题 | 17.3s | 7.6s | **9.8s** |
 
-差额**随错题数线性增长** —— 这就是 N+1 次 embedding 的代价，量级已经和 LLM 调用本身相当。
-所以下一个优化点不是「怎么让模型更快」，而是**把 embedding 检索批量化/加缓存**（见 2.18 末尾）。
+差额**随错题数线性增长**。当时我把它归因为「N+1 次 embedding」。
+
+> ⚠️ **2026-10-06 更正：这个归因量级错了。** 后来做 embedding 缓存时把非 LLM 部分整个摊开测
+> （见 2.20），关掉缓存时一次 analyze 全程只有 **0.145s**，embedding 只占其中 ~0.12s，
+> 不是 6.35s。所以这 6.35s 的**真实来源仍未定位**，下一步应该逐段打点复测，而不是继续猜。
 
 ### 各层额度与折算上限（按实测端到端 P50 = 12 秒折算）
 
@@ -1283,18 +1287,20 @@ Little's Law：`QPS = 并发额度 ÷ 单次耗时`
 | 线程池拒绝策略 `CallerRuns` → `Abort` | 过载快速失败，不再把分析压到 HTTP 线程上 |
 | 上游熔断（见 2.19） | 上游故障时后续请求不再发出，1 秒内返回 503 而不是各等 60 秒 |
 | 悬挂任务回收（见 2.11） | 实例崩溃 / 消息丢失导致卡在 PENDING 的任务会被扫描出来重投 |
+| embedding 缓存（见 2.20） | 重复分析同一份记录：0.145s → 0.023s（省 122ms / 次，84.4%） |
 
 ### 还没做的（按实测收益排序）
 
-1. **embedding 检索批量化 + 结果缓存** —— 实测非 LLM 部分已占端到端的一半（平均 6.35s），
-   且随错题数线性增长（3 题 5.2s → 8 题 9.8s）。这是当前**收益最大的一项**，
-   优先级高于任何「让模型更快」的尝试。做法：同一道题的 embedding 按文本哈希缓存；
-   多道错题的检索合并为一次批量调用。
+1. **⚠️ 定位那 6.35s 的真实来源（现在的头号未解项）** —— 2.18 实测端到端 12.7s、
+   LLM 只占 6.3s，剩下 6.35s 随错题数线性增长，我原先归给 embedding；
+   2.20 实测证明 embedding 只占 ~0.12s，**真正的大头还没找到**。
+   做法：用真实 DeepSeek 复测，并在「读记录 / 记忆注入 / 模型调用 / 落库 / 覆盖度检索」
+   五段各打点，而不是继续凭推理归因。
 2. **上游 per-user 隔离熔断** —— 目前是全局一个熔断器；若将来支持「用户自带 Key」，
    必须按用户隔离，否则一个人的坏 Key 会拖垮所有人的调用额度。
 3. **水平扩展** —— 应用本身已无状态（JWT + Redis + MQ），加实例即可。
    实测看同步路径上限约 2.7 QPS（受 `global-in-flight=32` 约束）、异步约 1.3 QPS（受消费者并发约束），
-   加实例是最直接的扩容手段，前提是先做完第 1 项。
+   但在第 1 项查清之前，加实例只是把未定位的那 6 秒复制 N 份。
 
 ---
 
@@ -1394,6 +1400,125 @@ app.llm.circuit:
 - 熔断器是**单实例内存态**，多实例各自统计，看到的是「本机视角」的上游健康度。
   全局视角需要把窗口计数放到 Redis —— 当前规模下没做。
 - `stream`（SSE 流式）不套熔断也不套超时：它是响应式的，不占平台线程，语义与同步调用不同。
+
+---
+
+## 2.20 embedding 缓存（纯函数才配缓存）
+
+### 为什么能缓存它，而 LLM 生成不能
+
+embedding 是**纯函数**：同样的模型 + 同样的文本 → 永远同样的向量。
+LLM 生成不是（同输入可产出不同结果，还会随时间/版本变化），所以分析报告能缓存是
+「业务上接受复用旧结果」，而向量缓存是「数学上必然一致」—— 后者没有过期正确性问题。
+
+实测背景（见 2.18）：一次 analyze 的端到端耗时里，除模型调用外还有一块随错题数增长的部分，
+`annotateNoteCoverage` 会对每道错题检索一次笔记，每检索一次就要 embedding 一次 query。
+
+### 实现：只拦 `call(EmbeddingRequest)` 一个方法
+
+`CachingEmbeddingModel` 是装饰器，套在真实 `EmbeddingModel`（Ollama bge-m3 / 哈希兜底）外面。
+
+```java
+@Override
+public EmbeddingResponse call(EmbeddingRequest request) { ... }
+```
+
+Spring AI 的 `embed(String)` / `embed(List<String>)` / `embed(List<Document>)` 默认实现
+**全部汇聚到 `call()`**，所以重写这一个方法就覆盖了所有入口：入库的批量向量化、
+检索时的 query 向量化，都自动走缓存，调用方（`PgVectorStore`）完全不知道自己被缓存了。
+
+批量请求的处理：**只把未命中的文本发给上游**，再按原下标回填。
+
+```
+embed([A, BB, CCC, A])        // A 已缓存
+  → 上游只收到 [BB, CCC]
+  → 返回顺序仍按输入还原（不能按上游返回顺序拼）
+```
+
+**不缓存 `dimensions()`**。接口默认实现是 `embed("Test String").length` ——
+那会往缓存里塞一条垃圾 key，还会为了拿维度白跑一次模型。直接问委托对象。
+
+### 两级缓存
+
+| 级 | 位置 | 作用 | 不可用时 |
+|---|---|---|---|
+| L1 | 进程内 `LinkedHashMap`（访问序 LRU，上限 2000 条） | 命中零序列化、零网络 | — |
+| L2 | Redis | 跨实例共享、重启后仍有效 | 静默跳过，只剩 L1 |
+
+1024 维向量存 JSON 要 12KB+，L2 按 **float 二进制 + Base64** 存（4KB → 5.5KB），约为 JSON 的一半。
+
+embedding 是纯函数，**各实例各自预热不影响正确性，只影响命中率** —— 这正是它和
+「分布式会话缓存」不一样的地方：这里的多份副本是安全的。
+
+### ⚠️ 缓存 key 必须带模型标识
+
+```
+key = emb:<modelTag>:<sha256(text)>      # modelTag = ollama:bge-m3:1024
+```
+
+换 embedding 模型后向量空间完全不同。若 key 里没有模型标识，会拿**旧模型的向量去比新模型的向量**，
+检索结果全错而且**不报错**—— 这是缓存里最难查的一类故障（现象是「检索质量突然变差」，
+没人会想到是缓存）。所以 modelTag 是构造必填项，换模型即整体失效。
+
+### 实测（本机 PostgreSQL 17 + pgvector 0.8.6 + 真实 Ollama bge-m3）
+
+同一份 6 题记录、同一进程内连续 4 次 analyze，`app.llm.stub=true` 固定住模型耗时，
+让差异只来自 embedding；每个用例先跑一次预热（建表 + Ollama 首次加载模型），
+并**反转顺序各跑两轮**排除顺序偏差：
+
+| 用例 | 4 次 analyze 耗时 | 均值 |
+|---|---|---|
+| 缓存关闭 | 0.159 / 0.134 / 0.136 / 0.136 s | **0.145 s** |
+| 缓存开启 | 0.027 / 0.018 / 0.027 / 0.017 s | **0.023 s** |
+
+**差值 122ms / 次 analyze，降幅 84.4%**。每次 analyze 有 7 次 embedding 调用
+（6 道错题各一次 + 一次整体查询），折算**单次 embedding 约 17ms**（bge-m3 已预热时）。
+
+**入库路径同样受益**（批量 `embed(List<Document>)` 也走同一个拦截点）—— 同一篇笔记连续上传两次：
+
+```
+第 1 次 upload：200  0.379s    （切分 + embedding + 写向量库 + 建 tsvector 索引）
+第 2 次 upload：200  0.0093s   （embedding 命中，只剩 DB 与索引写入）
+```
+
+命中率可从 `/api/debug/embedding-cache` 读到：
+
+```json
+{"enabled":true,"models":[{"total":35,"l1Hits":28,"l2Hits":0,"misses":7,
+  "evictions":0,"l1Size":7,"hitRatePercent":80.0,"modelTag":"ollama:bge-m3:1024"}]}
+```
+
+35 次调用里 28 次命中 —— 只有第一次真正调了模型，之后全部走 L1。
+
+> L2（Redis）本机没有 Redis，**只做了单测（mock 验证读写与降级），没做端到端实测**。
+> 单测覆盖：L2 命中回填 L1、Redis 抛异常时静默降级不影响主流程。
+
+### ⚠️ 一个必须纠正的结论：我上一版把收益估大了
+
+2.18 里我写过「非 LLM 部分平均 6.35s，主要是 N+1 次 embedding」。**这句话量级错了。**
+
+这次实测把非 LLM 部分整个摊开看：关闭缓存时**一次 analyze 全程只要 0.145s**
+（含 DB 读写 + 记忆注入 + 7 次真实 embedding）。也就是说 embedding 只占其中的 ~0.12s，
+远不是 6.35s。
+
+所以 2.18 里那 6.35s 的真实来源**仍未定位**，不能归给 embedding。当前候选：
+真实 DeepSeek 那轮测量里 Redis 未启动（缓存读写失败的耗时）、记忆注入的 SQL、
+或 `llm_call_duration` 只统计了 `structured()` 而实际还有其它模型调用。
+**下一步应该用真实 DeepSeek 复测一次并逐段打点**，而不是继续猜。
+
+这次缓存的收益是**真实但更小的**：重复分析同一份记录时省掉 ~122ms（约 84% 的非模型耗时），
+并且在批量入库重复片段、多实例共享向量的场景下收益更大。
+
+### 配置
+
+```yaml
+app.rag.embedding-cache:
+  enabled: true          # RAG_EMBED_CACHE_ENABLED
+  max-entries: 2000      # L1 上限，1024 维约 4KB/条 → 约 8MB
+  redis: true            # L2 开关，Redis 不可用时自动只留 L1
+  ttl: 7d                # 远长于分析结果缓存（30m）：向量不会像报告那样随时间过期
+  model-tag: ""          # 留空 = 自动按「来源:模型名:维度」拼
+```
 
 ---
 
@@ -1518,6 +1643,7 @@ interview-agent/
 | 按用户限流（频率 + 并发 + 全局维度，阈值外置） | ✅ |
 | 上游熔断（滑动窗口 + 连续失败双路判定） | ✅ |
 | 悬挂任务回收（异步任务补偿扫描） | ✅ |
+| embedding 缓存（L1 LRU + L2 Redis，模型标识进 key） | ✅ |
 | 可观测性（traceId 全链路 + LLM/RAG 指标） | ✅ |
 | 混合检索（向量 + 关键词 tsvector + RRF） | ✅ |
 | 笔记覆盖度判定（把「答错」拆成「该复习」/「该补笔记」） | ✅ |
