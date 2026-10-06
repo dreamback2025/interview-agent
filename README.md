@@ -1504,7 +1504,8 @@ key = emb:<modelTag>:<sha256(text)>      # modelTag = ollama:bge-m3:1024
 所以 2.18 里那 6.35s 的真实来源**仍未定位**，不能归给 embedding。当前候选：
 真实 DeepSeek 那轮测量里 Redis 未启动（缓存读写失败的耗时）、记忆注入的 SQL、
 或 `llm_call_duration` 只统计了 `structured()` 而实际还有其它模型调用。
-**下一步应该用真实 DeepSeek 复测一次并逐段打点**，而不是继续猜。
+下面 2.21 用逐段打点把这个问题摊开量了一遍 —— 结论是：非模型各段加起来不到 150ms，
+那 6 秒**不在**这些段里。
 
 这次缓存的收益是**真实但更小的**：重复分析同一份记录时省掉 ~122ms（约 84% 的非模型耗时），
 并且在批量入库重复片段、多实例共享向量的场景下收益更大。
@@ -1519,6 +1520,103 @@ app.rag.embedding-cache:
   ttl: 7d                # 远长于分析结果缓存（30m）：向量不会像报告那样随时间过期
   model-tag: ""          # 留空 = 自动按「来源:模型名:维度」拼
 ```
+
+---
+
+## 2.21 分段打点（端到端耗时只能报警，不能定位）
+
+### 为什么把打点做成常驻代码，而不是出问题再加
+
+端到端 P95 变差时，你只知道「慢了」，不知道「哪一段慢了」。一次 analyze 串着
+读记录、知识检索、记忆注入、模型调用、落库、覆盖度标注、写缓存七件事，
+任何一段抖一下，顶部指标看起来完全一样。
+
+而「哪一段慢」在真实流量下会**漂移**：上游变慢、Ollama 模型被卸载、错题数变多。
+等出问题再临时加代码，看到的已经不是出问题的那批请求了。
+
+### 实现：`observability/StageRecorder`
+
+```java
+StageRecorder t = StageRecorder.start("analyze", registry);
+try {
+    InterviewRecord record = loadForAnalysis(recordId);
+    t.mark("load");        // mark 记的是「刚结束的那一段」
+    ...
+} finally {
+    t.finish();            // 幂等，业务分支里调一次、finally 里再调一次也只记一遍
+}
+```
+
+产出两样东西：
+
+| 产出 | 用途 |
+|---|---|
+| 日志一行 `[stage] flow=analyze total=6886ms \| load=21ms ... llm=6523ms ...` | 排查单次请求：`grep "\[stage\]" app.log \| tail -1` |
+| 指标 `stage_duration{flow,stage}`（带 P50/P95） | 看分布：段级 P95 才是「哪一段拖尾」的答案，均值会被大量快请求摊平 |
+
+**刻意不用 AOP 自动切**：段边界是业务语义（「知识检索」是 `buildUserPrompt` 内部的
+一段，不是一个方法），切点表达式表达不出来，硬要切就得把方法拆碎。
+
+### analyze 的段划分
+
+| 段 | 内容 | 会受什么影响 |
+|---|---|---|
+| `load` | 只读事务加载记录 + 题目（触碰一次集合防懒加载异常） | 题目条数、DB 连接获取 |
+| `cache.get` | 读分析结果缓存（Redis） | Redis 是否可达 |
+| `prompt.base` | 纯字符串拼装题目与 JD | 题目条数 |
+| `prompt.rag` | 知识库检索：一次 embedding + 向量/关键词检索 | **Ollama 模型是否在内存**（冷加载是秒级） |
+| `prompt.memory` | 历史复盘注入：查库 + 反序列化若干份报告 JSON | 历史报告条数 |
+| `llm` | 模型调用（含熔断与超时包装） | 上游 |
+| `persist` | 写事务：回写 weakPoints + 存报告 | DB |
+| `coverage` | 每道错题并行检索笔记（虚拟线程 + 单题 15s 上限） | 错题数、Ollama |
+| `cache.put` | 写分析结果缓存 | Redis |
+
+`prompt.*` 三段发生在模型调用**之前**，计入端到端、但**不计入 `llm_call_duration`** ——
+这正是此前「端到端 12.7s 而模型只有 6.3s」说不清的盲区所在。
+
+### 实测（本机 PG17 + pgvector + 真实 Ollama bge-m3）
+
+| 场景 | 端到端 | 非模型各段合计 | 说明 |
+|---|---|---|---|
+| stub 模型，Ollama 已预热 | 13 ~ 90 ms | 10 ~ 60 ms | `rag` 25ms、`coverage` 2~10ms、`persist` 2~6ms、`memory` 1~3ms |
+| **Ollama 模型卸载后首次调用**（4 次不同内容） | **895 / 909 / 906 / 1165 ms** | ~880 ms | `rag` = 825 / 833 / 835 / 1090 ms —— 全是 bge-m3 冷加载 |
+| 假 DeepSeek（本地 OpenAI 协议 mock，固定延迟 6.4s） | 6475 / 6489 / 6886 ms | 60 ~ 360 ms | `llm` = 6415 / 6416 / 6523 ms，其余段合计不到 0.4s |
+
+对照实验也做了：把分析缓存按默认开启（本机无 Redis）跑，
+`cache.get` = 0~2ms、`cache.put` = 0ms —— Redis 不可用时是**立即失败**，不是等超时，
+所以「Redis 挂了拖慢 6 秒」这个候选被排除。
+
+### 结论
+
+1. **非模型段在热态下总计不到 150ms**，不是 12.7s 里那 6 秒的来源。
+2. **唯一能达到秒级的非模型项是 Ollama 冷加载**：bge-m3 有 1.1GB，
+   Ollama 默认 `keep_alive=5m`，低流量（请求间隔超过 5 分钟）时**每次 analyze 都要付一次**。
+   本机这次测到 0.83~1.09s（系统页缓存是热的），冷盘首次加载会更慢。
+   对策很直接：调大 `keep_alive`，或加一个低频预热。
+3. **端到端 ≈ 模型耗时 + 0.05s**（mock 固定 6.4s 时，端到端 6.48s）。
+   所以真实 DeepSeek 那轮「端到端 12.7s / 模型 6.33s」的 6 秒差值，
+   **不在上面任何一段里**——它要么发生在真实上游这一侧（连接建立、重试、多次往返），
+   要么上一批测量的样本本身混了别的东西。
+
+### 仍未做完的一步
+
+上面第 3 条是**排除法**得出的，不是直接测出来的 —— 本机没有 Key，只能用 mock 验证基线。
+定论需要拿真实 Key 跑一次同样的命令：
+
+```bash
+# 带 Key 启动后跑一次 analyze，然后看这一行
+grep "\[stage\] flow=analyze" app.log | tail -1
+# [stage] flow=analyze total=??ms | load=.. prompt.rag=.. llm=.. coverage=..
+```
+
+`llm` 段如果只有 6.3s 而 `total` 有 12.7s，那么差值必然落在 `total` 里**没被任何段覆盖**
+的那部分（即 `finish()` 之前、`cache.put` 之后的时间，或 HTTP 层），那时候再往 Tomcat /
+Filter / 客户端连接这条线上查。这个结论现在不下，避免第三次把猜测写成结论。
+
+### 配置
+
+无需配置，默认开启。段级分位数同样走 Micrometer 客户端 quantile，
+与 `llm_call_duration` 保持一致的读法。
 
 ---
 

@@ -16,8 +16,10 @@ import com.dreamback.interviewagent.service.AnalysisService;
 import com.dreamback.interviewagent.service.KnowledgeService;
 import com.dreamback.interviewagent.service.MemoryService;
 import com.dreamback.interviewagent.util.Digest;
+import com.dreamback.interviewagent.observability.StageRecorder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -83,6 +85,7 @@ public class AnalysisServiceImpl implements AnalysisService {
     private final UserContext userContext;
     private final TransactionTemplate roTransactionTemplate;
     private final TransactionTemplate rwTransactionTemplate;
+    private final MeterRegistry registry;
 
     /**
      * 分析主流程。刻意拆成三段，事务边界只包含「读」和「写」两步毫秒级动作：
@@ -98,30 +101,45 @@ public class AnalysisServiceImpl implements AnalysisService {
      */
     @Override
     public AnalysisReport analyze(Long recordId) {
-        InterviewRecord record = loadForAnalysis(recordId);
+        // 分段计时是常驻的，不是排查时才加：端到端耗时只能报警不能定位，
+        // 而「哪一段慢」在真实流量下会漂移（上游慢、知识库冷、错题数变多），
+        // 等出问题再临时加代码，那时看到的已经不是出问题的那批请求了。
+        StageRecorder t = StageRecorder.start("analyze", registry);
+        try {
+            InterviewRecord record = loadForAnalysis(recordId);
+            t.mark("load");
 
-        CacheService cache = cacheProvider.getIfAvailable();
-        String cacheKey = analysisCacheKey(record);
-        if (cache != null) {
-            AnalysisReport cached = cache.get(cacheKey, AnalysisReport.class);
+            CacheService cache = cacheProvider.getIfAvailable();
+            String cacheKey = analysisCacheKey(record);
+            AnalysisReport cached = cache == null ? null : cache.get(cacheKey, AnalysisReport.class);
+            t.mark("cache.get");
             if (cached != null) {
                 log.info("分析结果命中缓存，跳过模型调用：recordId={}", recordId);
                 // 覆盖度必须重判 —— 缓存 key 不含笔记状态，用户可能刚补了笔记
                 annotateNoteCoverage(record, cached);
+                t.mark("coverage");
                 return cached;
             }
-        }
 
-        AnalysisReport report = llmService.structured(
-                SYSTEM_PROMPT, buildUserPrompt(record),
-                AnalysisReport.class, () -> heuristic(record));
+            // buildUserPrompt 内部会记 prompt.base / prompt.rag / prompt.memory 三段，
+            // 它们发生在模型调用之前，顺序天然正确。
+            AnalysisReport report = llmService.structured(
+                    SYSTEM_PROMPT, buildUserPrompt(record, t),
+                    AnalysisReport.class, () -> heuristic(record));
+            t.mark("llm");
 
-        persistReport(recordId, report);
-        annotateNoteCoverage(record, report);
-        if (cache != null) {
-            cache.put(cacheKey, report);
+            persistReport(recordId, report);
+            t.mark("persist");
+            annotateNoteCoverage(record, report);
+            t.mark("coverage");
+            if (cache != null) {
+                cache.put(cacheKey, report);
+            }
+            t.mark("cache.put");
+            return report;
+        } finally {
+            t.finish();
         }
-        return report;
     }
 
     /**
@@ -283,8 +301,36 @@ public class AnalysisServiceImpl implements AnalysisService {
 
     @Override
     public String buildUserPrompt(InterviewRecord r) {
-        return doBuildUserPrompt(r) + retrieveKnowledgeContext(r)
-                + memoryService.recentInsights(r.getUserId(), r.getId(), 3);
+        return buildUserPrompt(r, null);
+    }
+
+    /**
+     * 组装喂给模型的上下文，三段各自计时：
+     * <ul>
+     *   <li>{@code prompt.base} —— 纯字符串拼接，理论上是微秒级；一旦不是，说明题目条数失控</li>
+     *   <li>{@code prompt.rag} —— 知识库检索：一次 embedding + 一次向量/关键词检索，
+     *       <b>这一段受 Ollama 是否在显存里直接影响</b>（模型冷加载是秒级）</li>
+     *   <li>{@code prompt.memory} —— 历史复盘注入：读库 + 反序列化若干份报告 JSON</li>
+     * </ul>
+     * 三段都发生在模型调用<b>之前</b>，都会被计入端到端、但不会计入 llm_call_duration ——
+     * 这正是此前「端到端 12.7s 而模型仅 6.3s，差的 6 秒说不清在哪」的盲区。
+     *
+     * @param t 计时器，传 null 表示不计时（流式分析、外部调用场景）
+     */
+    private String buildUserPrompt(InterviewRecord r, StageRecorder t) {
+        String base = doBuildUserPrompt(r);
+        if (t != null) {
+            t.mark("prompt.base");
+        }
+        String knowledge = retrieveKnowledgeContext(r);
+        if (t != null) {
+            t.mark("prompt.rag");
+        }
+        String memory = memoryService.recentInsights(r.getUserId(), r.getId(), 3);
+        if (t != null) {
+            t.mark("prompt.memory");
+        }
+        return base + knowledge + memory;
     }
 
     @Override
